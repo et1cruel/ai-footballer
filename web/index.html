@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="theme-color" content="#ffdc49"/>
+  <meta name="description" content="FOOTBALL AI INTELLIGENCE — เว็บวิเคราะห์ความน่าจะเป็นฟุตบอล พร้อมผลทดสอบย้อนหลังที่ตรวจสอบได้"/>
+  <title>FOOTBALL AI — วิเคราะห์ฟุตบอลด้วยข้อมูลจริง</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml"/>
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-logo">✦</div><div><strong>FOOTBALL<span>AI</span></strong><small>INTELLIGENCE SYSTEM</small></div></div>
+    <nav class="side-nav" aria-label="เมนูหลัก">
+      <button class="nav active" data-page="today"><span class="ico">▦</span> บอลวันนี้</button>
+      <button class="nav" data-page="analysis"><span class="ico">◎</span> วิเคราะห์คู่บอล</button>
+      <button class="nav" data-page="performance"><span class="ico">▥</span> ประสิทธิภาพ AI</button>
+      <button class="nav" data-page="settings"><span class="ico">⚙</span> วิธีใช้งานและข้อมูล</button>
+    </nav>
+    <div class="side-bottom"><span class="statusdot"></span> <span id="sidebar-status">กำลังตรวจสอบระบบ...</span><div class="side-meta">Statistical model v1 · ไม่ใช่ระบบรับเดิมพัน</div></div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar">
+      <div class="breadcrumbs"><span>FOOTBALL AI</span><span class="sep">/</span><strong id="page-caption">บอลวันนี้</strong></div>
+      <div class="top-actions"><span id="todayLabel" class="date-tag"></span><span id="modeBadge" class="pill muted">กำลังเชื่อมต่อ</span></div>
+    </header>
+    <main id="page" tabindex="-1"><div class="loading-shell"><div class="skeleton"></div><div class="skeleton"></div></div></main>
+    <footer class="global-footer">ข้อมูลประมาณจากสถิติ ไม่รับประกันผลการแข่งขัน • ไม่เชื่อมต่อบัญชีเดิมพัน <span>FOOTBALL AI INTELLIGENCE v0.2</span></footer>
+  </div>
+</div>
+<nav class="mobile-nav" aria-label="เมนูมือถือ">
+  <button data-page="today" class="active"><span>▦</span>วันนี้</button>
+  <button data-page="analysis"><span>◎</span>วิเคราะห์</button>
+  <button data-page="performance"><span>▥</span>ผล AI</button>
+  <button data-page="settings"><span>⚙</span>ตั้งค่า</button>
+</nav>
+<script src="config.js"></script>
+<script src="app.js" defer></script>
+</body>
+</html>
