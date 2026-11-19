@@ -1,11 +1,12 @@
 """Upcoming match dates from OpenFootball, with historical model estimates."""
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from threading import Lock
 from time import monotonic
 
 import httpx
 
-from .model import estimate_rates, outcome_probabilities, score_matrix
+from .model import estimate_fixture_rates, outcome_probabilities, score_matrix
 from .store import list_matches
 
 LEAGUES = {'en.1': 'E0', 'de.1': 'D1', 'es.1': 'SP1', 'it.1': 'I1', 'fr.1': 'F1'}
@@ -41,16 +42,20 @@ def build_analysis(datasets, failed, today, history):
     fixtures = []
     for league, games in datasets.items():
         rows = [r for r in history if r['league'] == league and not r['source'].startswith('DEMO:')]
+        by_day = defaultdict(list)
         for game in games:
             match_date = date.fromisoformat(game['date'])
             if not today <= match_date <= today + timedelta(days=14) or game.get('score'):
                 continue
-            home, away = game['team1'], game['team2']
-            rates = estimate_rates(rows, home, away, match_date)
-            probabilities = outcome_probabilities(score_matrix(rates['home'], rates['away'])) if rates else None
-            fixtures.append({'league': league, 'date': match_date.isoformat(), 'home': home, 'away': away,
-                             'probabilities': probabilities,
-                             'last_result': max((r['date'] for r in rows if r['date'] < game['date']), default=None),
-                             'samples': rates})
+            by_day[match_date].append((game['team1'], game['team2']))
+        for match_date, pairs in by_day.items():
+            date_text = match_date.isoformat()
+            last_result = max((r['date'] for r in rows if r['date'] < date_text), default=None)
+            day_rates = estimate_fixture_rates(rows, pairs, match_date)
+            for home, away in pairs:
+                rates = day_rates.get((home, away))
+                probabilities = outcome_probabilities(score_matrix(rates['home'], rates['away'])) if rates else None
+                fixtures.append({'league': league, 'date': date_text, 'home': home, 'away': away,
+                                 'probabilities': probabilities, 'last_result': last_result, 'samples': rates})
     return {'fixtures': sorted(fixtures, key=lambda f: (f['date'], f['league'], f['home'])),
             'failed_leagues': failed, 'updated_at': datetime.now(timezone.utc).isoformat()}

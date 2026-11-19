@@ -12,13 +12,15 @@ from .mania import live_rows
 
 
 ESTIMATE_STATUSES = {'1H', 'HT', '2H'}
+LIVE_MODEL_VERSION = 'poisson-live-2'
 LIVE_FIXTURES_URL = 'https://v3.football.api-sports.io/fixtures'
 _lock = Lock()
 _snapshot = None
 _next_attempt = 0.0
 
 
-def regulation_probabilities(home_goals, away_goals, minute, status, rates=None):
+def regulation_probabilities(home_goals, away_goals, minute, status, rates=None, *,
+                             extra=None, announced=None, red_cards=None):
     """Use equal scoring rates when there is no verified team-strength input."""
     if status not in ESTIMATE_STATUSES:
         return None
@@ -28,21 +30,27 @@ def regulation_probabilities(home_goals, away_goals, minute, status, rates=None)
             or type(away_goals) is not int or min(home_goals, away_goals) < 0):
         return None
 
-    # The feed reports regulation minute and stoppage separately. Keep some time
-    # remaining in the model while the provider still reports the half in play.
+    # Include only the unexpired portion of announced stoppage from this half.
+    stoppage_left = max(0, (announced or 0) - (extra or 0)) if minute in {45, 90} and status != 'HT' else 0
     if status == '1H':
         minute = min(minute, 45)
-    remaining = max(1, 90 - minute) / 90
+    remaining = max(1, 90 - minute + stoppage_left) / 90
     home_rate = rates['home'] if rates else 1.3
     away_rate = rates['away'] if rates else 1.3
+    if red_cards:
+        # Conservative provisional adjustment. Compare it with the clock-only
+        # baseline on the same fixtures before claiming an accuracy gain.
+        deficit = (red_cards.get('home') or 0) - (red_cards.get('away') or 0)
+        home_rate *= 0.80 ** max(0, deficit) * 1.10 ** max(0, -deficit)
+        away_rate *= 0.80 ** max(0, -deficit) * 1.10 ** max(0, deficit)
     matrix = score_matrix(home_rate * remaining, away_rate * remaining)
     return outcome_probabilities(matrix, home_goals - away_goals)
 
 
 def _format_fixture(row, history=None):
     fixture = row['fixture']
-    status = fixture['status']['short']
-    minute = fixture['status'].get('elapsed')
+    clock = fixture['status']
+    status, minute = clock['short'], clock.get('elapsed')
     home_goals = row['goals']['home']
     away_goals = row['goals']['away']
     home = row['teams']['home']['name']
@@ -55,18 +63,24 @@ def _format_fixture(row, history=None):
         league = next(iter(leagues))
         match_date = datetime.fromisoformat(fixture['date'].replace('Z', '+00:00')).date()
         rates = estimate_rates([match for match in eligible if match['league'] == league], home, away, match_date)
+    extra, announced = clock.get('extra'), clock.get('announced')
+    reds = row.get('red_cards')
     return {
         'id': fixture['id'],
+        'kickoff': fixture.get('date'),
         'league': row['league']['name'],
         'country': row['league'].get('country'),
         'home': row['teams']['home']['name'],
         'away': row['teams']['away']['name'],
         'status': status,
         'minute': minute,
-        'extra': fixture['status'].get('extra'),
+        'extra': extra,
+        'announced_stoppage': announced,
+        'red_cards': reds,
         'home_goals': home_goals,
         'away_goals': away_goals,
-        'probabilities': regulation_probabilities(home_goals, away_goals, minute, status, rates),
+        'probabilities': regulation_probabilities(home_goals, away_goals, minute, status, rates,
+                                                 extra=extra, announced=announced, red_cards=reds),
         'basis': 'team_history' if rates else 'equal_rates',
     }
 

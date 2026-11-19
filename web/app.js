@@ -37,6 +37,9 @@ function liveFixtureCard(fixture) {
     SUSP: 'ระงับการแข่งขัน', INT: 'หยุดชั่วคราว',
   };
   const clock = statusLabels[status] || (minute == null ? 'กำลังแข่ง' : `นาที ${minute}${extra > 0 ? `+${extra}` : ''}`);
+  const reds = fixture.red_cards || {};
+  const confirmedCards = [[home, reds.home], [away, reds.away]]
+    .filter(([, count]) => count > 0).map(([team, count]) => `${team} ใบแดง ${count} ใบ`);
   const score = home_goals == null || away_goals == null ? '–' : `${home_goals}–${away_goals}`;
   let forecast = '<small>ช่วงนี้ไม่มีเปอร์เซ็นต์ผลเวลา 90 นาที</small>';
   if (probabilities) {
@@ -44,14 +47,15 @@ function liveFixtureCard(fixture) {
     const highest = Math.max(...outcomes.map(([, probability]) => probability));
     const likely = outcomes.filter(([, probability]) => probability === highest);
     const summary = likely.length === 1 ? `แนวโน้มสูงสุด: ${likely[0][0]}` : 'โอกาสสูงสุดสูสีกัน';
-    const basis = fixture.basis === 'team_history' ? 'ใช้สถิติย้อนหลังของทั้งสองทีมร่วมกับสกอร์และเวลา' : 'ใช้สกอร์และเวลา โดยตั้งค่าความสามารถทีมเท่ากัน';
+    const basis = fixture.basis === 'team_history' ? 'สกอร์ เวลา และสถิติย้อนหลังของสองทีม' : 'สกอร์และเวลา โดยตั้งอัตราทำประตูเริ่มต้นเท่ากัน';
     forecast = `<div class="forecast-lead"><span>${clean(summary)}</span><strong>${fmt(highest)}</strong></div>
-      <small>${clean(basis)}</small><dl class="live-probabilities">${outcomes.map(([label, probability]) => `
+      <small>${clean(basis)}${confirmedCards.length ? ' · ปรับตามใบแดง' : ''}</small><dl class="live-probabilities">${outcomes.map(([label, probability]) => `
       <div class="${probability === highest ? 'leading' : ''}"><dt>${clean(label)}</dt><dd>${fmt(probability)}</dd></div>`).join('')}</dl>`;
   }
   return `<article class="fixture-item live-analysis-card"><div>
     <small>${clean([country, league, clock].filter(Boolean).join(' · '))}</small>
     <strong>${clean(home)} <span class="live-score">${clean(score)}</span> ${clean(away)}</strong>
+    ${confirmedCards.length ? `<small>${clean(confirmedCards.join(' · '))}</small>` : ''}
     ${forecast}</div></article>`;
 }
 
@@ -79,6 +83,34 @@ async function loadUpcomingAnalysis() {
 }
 
 let liveAnalysisPending = false;
+let liveAuditCheckedAt = 0;
+async function loadLiveAudit() {
+  const target = $('live-audit');
+  if (!target) return;
+  liveAuditCheckedAt = Date.now();
+  try {
+    const data = await api('/live-performance', {cache: 'no-store'});
+    if (!target.isConnected) return;
+    const wins = data.samples.find(sample => sample.sample === 'win_70');
+    const summary = wins?.settled ? `ถูก ${wins.correct}/${wins.settled} คู่ที่ยืนยันผลแล้ว · รอผล ${wins.recorded - wins.settled} คู่`
+      : `รอผล ${wins?.recorded || 0} คู่ · ยังไม่มีผลที่ยืนยันแล้ว`;
+    const rows = data.recent.map(match => {
+      const team = match.pick === 'home' ? match.home : match.away;
+      const clock = `${match.minute}′${match.extra ? ` +${match.extra}` : ''}`;
+      const correct = match.pick === 'home' ? match.final_home > match.final_away : match.final_away > match.final_home;
+      const result = match.confirmed_at ? `${match.final_home}–${match.final_away} · ${correct ? 'ทายถูก' : 'ทายผิด'}` : 'รอผล';
+      return `<div class="fixture-item"><div><strong>${clean(match.home)} · ${clean(match.away)}</strong>
+        <small>${clean(thaiTime(match.observed_at))} · ${clock} · ทาย ${clean(team)} ${fmt(match.pick_p)}</small></div><span>${result}</span></div>`;
+    });
+    const wasOpen = target.querySelector('details')?.open;
+    target.innerHTML = `<p><strong>${summary}</strong></p>
+      <p class="helper">นับคำทายทีมชนะครั้งแรกที่ถึง 70% ต่อคู่ในช่วง ${data.window_days} วัน เทียบผลครบ 90 นาทีรวมทดเจ็บจาก Football Mania</p>
+      ${rows.length ? `<details ${wasOpen ? 'open' : ''}><summary>ดูคำทายล่าสุด</summary><div class="fixture-list">${rows.join('')}</div></details>` : ''}`;
+  } catch {
+    if (target.isConnected) target.textContent = 'ยังโหลดผลตรวจคำทายสดไม่ได้';
+  }
+}
+
 async function loadLiveAnalysis() {
   if (!$('live-analysis') || liveAnalysisPending) return;
   liveAnalysisPending = true;
@@ -92,10 +124,13 @@ async function loadLiveAnalysis() {
           ? '<a href="https://football-mania.com/" target="_blank" rel="noopener">Football Mania</a>'
           : 'API-Football';
         const updated = new Date(data.updated_at).toLocaleTimeString('th-TH', {timeZone:'Asia/Bangkok', hour:'2-digit', minute:'2-digit', second:'2-digit'});
-        const feedStatus = `<p class="helper">${data.fixtures.length} คู่กำลังแข่ง · ดึงข้อมูลล่าสุด ${clean(updated)} น. · ${source}</p>`;
+        const age = Math.max(0, Math.floor((Date.now() - Date.parse(data.updated_at)) / 1000));
+        const stale = age > 60;
+        const feedStatus = `<p class="helper">${data.fixtures.length} คู่กำลังแข่ง · ดึงข้อมูลจาก ${source} เมื่อ ${clean(updated)} น. · ${age} วินาทีที่แล้ว</p>
+          ${stale ? alertBar('ข้อมูลล่าสุดเกิน 1 นาที ซ่อนเปอร์เซ็นต์จนกว่าจะได้รับข้อมูลใหม่', 'warning') : ''}`;
         if (data.fixtures.length) {
           target.innerHTML = `${feedStatus}
-            <div class="fixture-list">${data.fixtures.map(liveFixtureCard).join('')}</div>`;
+            <div class="fixture-list">${data.fixtures.map(fixture => liveFixtureCard(stale ? {...fixture, probabilities: null} : fixture)).join('')}</div>`;
         } else {
           target.innerHTML = `${feedStatus}<p>ขณะนี้ฟีดไม่มีคู่ที่กำลังแข่ง</p>`;
         }
@@ -129,9 +164,10 @@ function renderToday(){
     ? alertBar('สถิติที่ใช้วิเคราะห์เป็นข้อมูลจำลองสำหรับทดสอบระบบ', 'warning')
     : '';
   return title('ฟุตบอลวันนี้', 'ดูสกอร์สด ผลการแข่งขัน และเวลาเริ่มแข่งตามเวลาไทย')
-    + panel('วิเคราะห์คู่ที่กำลังแข่ง', `<p class="helper">โอกาสชนะหรือเสมอในเวลา 90 นาที คำนวณจากสกอร์ นาทีแข่ง และสถิติทีมเมื่อมีข้อมูลเพียงพอ</p>
+    + panel('วิเคราะห์คู่ที่กำลังแข่ง', `<p class="helper">โอกาสชนะหรือเสมอใน 90 นาทีรวมทดเจ็บ ใช้สกอร์และนาทีแข่ง ร่วมกับใบแดงและสถิติทีมเมื่อมีข้อมูล</p>
       <div id="live-analysis" aria-live="polite">กำลังตรวจคู่ที่กำลังแข่ง…</div>`,
       '<a class="live-scores-source" href="https://www.365scores.com/th/football/live" target="_blank" rel="noopener noreferrer">เปิดรายการสด 365Scores ↗</a>')
+    + panel('ตรวจผลคำทายสด 70% ขึ้นไป', `<div id="live-audit">กำลังโหลดผลตรวจคำทาย…</div>`)
     + panel('โปรแกรมแข่งและโอกาสชนะ 14 วัน', `<div id="upcoming-analysis" aria-live="polite">กำลังโหลดโปรแกรมและวิเคราะห์...</div>`)
     + liveScoresPanel()
     + demoWarning
@@ -182,10 +218,19 @@ function renderPerformance(){let body=title('ประสิทธิภาพ�
  return body+`<div class="cards"><div class="summary-card"><span class="small">แมตช์ที่ทดสอบได้</span><strong>${item.sample_size}</strong><small>นัดนอกช่วงฝึกของแต่ละวัน</small></div><div class="summary-card"><span class="small">ทายผล 1X2 ตรง</span><strong>${fmt(item.accuracy)}</strong><small>ไม่บ่งบอกความแม่นของเปอร์เซ็นต์</small></div><div class="summary-card"><span class="small">Multiclass Log Loss</span><strong>${item.log_loss}</strong><small>ยิ่งต่ำยิ่งดี</small></div></div>`+panel('รายงานการทดสอบ',`<div class="market-list"><div class="market-row"><span>Multiclass Brier Score (ยิ่งต่ำยิ่งดี)</span><strong>${item.brier_multiclass}</strong></div><div class="market-row"><span>ข้ามข้อมูลไม่พอ</span><strong>${item.skipped} นัด</strong></div><div class="market-row"><span>Baseline Log Loss (ความถี่ลีกย้อนหลัง)</span><strong>${item.baseline_log_loss}</strong></div><div class="market-row"><span>ดีกว่า Baseline ตาม Log Loss</span><strong class="${item.beats_frequency_baseline?'good':'bad'}">${item.beats_frequency_baseline?'ใช่':'ยังไม่ผ่าน'}</strong></div><div class="market-row"><span>โมเดล</span><strong>${clean(item.model)}</strong></div></div><p class="helper">${clean(item.method)} · ยังไม่มีการทดสอบเปรียบเทียบกับราคาตลาดหรือรับรองผลกำไร</p>`);
 }
 function renderSettings(){return title('ข้อมูลและวิธีใช้งาน','สถิติที่ใช้มาจากแหล่งข้อมูลที่คุณนำเข้า ไม่มีการแสดงผลบอลสดปลอม')+panel('สถานะระบบ',`<div class="market-list"><div class="market-row"><span>API</span><strong class="good">${state.meta?'ออนไลน์':'ออฟไลน์'}</strong></div><div class="market-row"><span>ประเภทข้อมูล</span><strong>${badgeMode()==='demo'?'DEMO':badgeMode()==='real'?'นำเข้าเอง':'ยังไม่มีข้อมูล'}</strong></div><div class="market-row"><span>โมเดล</span><strong>${clean(state.meta?.model||'—')}</strong></div><div class="market-row"><span>จำนวนลีก</span><strong>${state.meta?.leagues?.length??0}</strong></div></div>`)+panel('คู่มือเริ่มต้น',`<div class="helper"><strong>เปิดเว็บ:</strong> <span class="kbd">uvicorn football_ai.api:app --app-dir api --port 8000</span><br><strong>นำเข้าไฟล์ CSV:</strong> <span class="kbd">PYTHONPATH=api python scripts/import_csv.py E0.csv</span><br><strong>โหลดข้อมูลจากแหล่ง:</strong> <a href="https://www.football-data.co.uk/data.php" target="_blank" rel="noopener noreferrer">Football-Data.co.uk</a><br><strong>Deploy:</strong> โฮสต์ web/ บน Cloudflare Pages และ API Python บนโฮสต์ที่รัน Python ได้ พร้อมตั้งค่า URL ใน web/config.js<br><br>อ่าน README.md ภายใน ZIP เพื่อดูขั้นตอนโดยละเอียด</div>`)+panel('ขอบเขตการวิเคราะห์',`<div class="helper">✓ 1X2, สูง–ต่ำ, BTTS, สกอร์, คำนวณ EV สำหรับต่อ–รองและควบลูก<br>△ ครึ่งแรก เตะมุม ใบเหลือง จะแสดงเฉพาะเมื่อมีข้อมูลพอ และส่วนทดลองยังไม่ได้ยืนยันผลทดสอบ<br>✕ ยังไม่เชื่อมข้อมูลบอลสดแบบเรียลไทม์ ไม่มีระบบแทงบอลอัตโนมัติ และไม่มีการรับประกันผล</div>`)}
-function render(){headers();modeHeader();$('page').innerHTML=state.page==='today'?renderToday():state.page==='analysis'?renderAnalysis():state.page==='performance'?renderPerformance():renderSettings();if(state.page==='today'){loadLiveAnalysis();loadUpcomingAnalysis()}}
+function render(){headers();modeHeader();$('page').innerHTML=state.page==='today'?renderToday():state.page==='analysis'?renderAnalysis():state.page==='performance'?renderPerformance():renderSettings();if(state.page==='today'){loadLiveAnalysis();loadUpcomingAnalysis();loadLiveAudit()}}
 async function load(){try{const [meta,fixtures]=await Promise.all([api('/meta'),api('/fixtures')]);state.meta=meta;state.fixtures=fixtures.fixtures||[];const first=meta.leagues?.[0];state.league=first?.code||'';state.home=first?.teams?.[0]||'';state.away=first?.teams?.[1]||'';render();}catch(err){state.meta=null;if(state.page==='today'){render()}else{$('page').innerHTML=title('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์','เปิดเว็บไซต์ผ่าน FastAPI หรือกำหนด URL API ที่ถูกต้อง')+alertBar(err.message,'error');modeHeader()}}}
-setInterval(() => { if (!document.hidden) loadLiveAnalysis(); }, 60000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) loadLiveAnalysis(); });
+setInterval(() => {
+  if (document.hidden) return;
+  loadLiveAnalysis();
+  if (Date.now() - liveAuditCheckedAt >= 60000) loadLiveAudit();
+}, 20000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    loadLiveAnalysis();
+    if (Date.now() - liveAuditCheckedAt >= 60000) loadLiveAudit();
+  }
+});
 async function loadPerformance(){if(!state.league)return;state.performance=null;render();try{state.performance=await api('/performance?league='+encodeURIComponent(state.league)+'&last_n=100')}catch(err){state.performance={error:err.message}}render()}
 async function requestPrediction(){state.loading=true;state.predict=null;state.oddsResult=null;state.error='';render();try{const qs=new URLSearchParams({league:state.league,home:state.home,away:state.away,match_date:state.matchDate});state.predict=await api('/predict?'+qs)}catch(err){state.error=err.message}state.loading=false;render()}
 document.addEventListener('click',e=>{const btn=e.target.closest('[data-page]');if(btn){setPage(btn.dataset.page);return}const tab=e.target.closest('[data-market]');if(tab){state.marketTab=tab.dataset.market;render();return}if(e.target.closest('#goAnalysis')){setPage('analysis');return}const fixture=e.target.closest('[data-fixture]');if(fixture){const f=state.fixtures.find(x=>x.id===fixture.dataset.fixture);if(f){state.league=f.league;state.home=f.home;state.away=f.away;state.matchDate=f.kickoff.slice(0,10);state.predict=null;setPage('analysis');requestPrediction()}}});

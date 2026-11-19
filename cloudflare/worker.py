@@ -5,16 +5,18 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 import sys
 from time import monotonic
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Depends, FastAPI
-from workers import asgi
+from workers import Response, asgi, fetch, wait_until
 
 sys.path.insert(0, str(Path(__file__).parent))
 from football_ai import api, store
-from football_ai.live import _format_fixture
+from football_ai.live import LIVE_MODEL_VERSION, _format_fixture
 from football_ai.mania import async_live_rows
 from football_ai.schedule import LEAGUES, build_analysis
+from ledger import performance as live_performance, record_forecasts, settle_forecasts
 from seed import DATABASE
 
 store.DB_PATH = Path('/tmp/football.sqlite')
@@ -27,7 +29,34 @@ async def restore_seed():
 
 app = FastAPI(title='Football AI Intelligence', docs_url='/api/docs', openapi_url='/api/openapi.json',
               redoc_url=None, dependencies=[Depends(restore_seed)])
-Default = asgi.entrypoint(app)
+
+
+class Default(asgi.entrypoint(app)):
+    async def fetch(self, request):
+        if request.method == 'GET':
+            path = urlsplit(request.url).path
+            if path == '/api/live-fixtures':
+                await restore_seed()
+                snapshot = await live()
+                if snapshot['state'] == 'ready' and snapshot['fixtures']:
+                    wait_until(record_snapshot(self.env.FORECASTS, snapshot))
+                return Response.json(snapshot)
+            if path == '/api/live-performance':
+                return Response.json(await live_performance(self.env.FORECASTS))
+            if path == '/api/upcoming-analysis':
+                await restore_seed()
+                return Response.json(await upcoming())
+        return await super().fetch(request)
+
+    async def scheduled(self, controller):
+        await restore_seed()
+        now = datetime.now(timezone.utc)
+        try:
+            data = await live()
+            if data['state'] == 'ready' and data['fixtures']:
+                await record_snapshot(self.env.FORECASTS, data)
+        finally:
+            await settle_forecasts(self.env.FORECASTS, now)
 
 
 @app.get('/api/health')
@@ -62,49 +91,64 @@ async def odds_estimate(params: api.OddsInput):
 
 live_cache = None
 live_expires = 0.0
-live_lock = asyncio.Lock()
+recorded_snapshot_at = None
+
+
+async def record_snapshot(db, snapshot):
+    global recorded_snapshot_at
+    timestamp = snapshot['updated_at']
+    if recorded_snapshot_at != timestamp:
+        await record_forecasts(db, snapshot['fixtures'], datetime.fromisoformat(timestamp))
+        recorded_snapshot_at = timestamp
 
 
 @app.get('/api/live-fixtures')
 async def live():
     global live_cache, live_expires
-    async with live_lock:
-        if monotonic() >= live_expires:
-            try:
-                rows = await async_live_rows()
-                history = store.list_matches() if rows else []
-                live_cache = {'state': 'ready', 'fixtures': [_format_fixture(row, history) for row in rows],
-                              'updated_at': datetime.now(timezone.utc).isoformat(), 'source': 'football_mania'}
-            except (httpx.HTTPError, AttributeError, KeyError, TypeError, ValueError):
-                live_cache = {'state': 'unavailable', 'fixtures': [], 'updated_at': None, 'source': 'football_mania'}
-            live_expires = monotonic() + 60
+    if live_cache is not None and monotonic() < live_expires:
         return live_cache
+    # Keep async fetches owned by the current request. Sharing an asyncio lock
+    # across Worker requests can strand waiters on another I/O context.
+    try:
+        rows = await async_live_rows()
+        history = store.list_matches() if rows else []
+        live_cache = {'state': 'ready', 'fixtures': [_format_fixture(row, history) for row in rows],
+                      'updated_at': datetime.now(timezone.utc).isoformat(), 'source': 'football_mania',
+                      'model': LIVE_MODEL_VERSION}
+    except (httpx.HTTPError, AttributeError, IndexError, KeyError, TypeError, ValueError):
+        live_cache = {'state': 'unavailable', 'fixtures': [], 'updated_at': None, 'source': 'football_mania'}
+    live_expires = monotonic() + (20 if live_cache['state'] == 'ready' else 5)
+    return live_cache
+
+
+@app.get('/api/live-performance')
+async def tracked_live_performance(env=asgi.env):
+    return await live_performance(env.FORECASTS)
 
 
 schedule_cache = None
 schedule_expires = 0.0
-schedule_lock = asyncio.Lock()
-
-
 @app.get('/api/upcoming-analysis')
 async def upcoming():
     global schedule_cache, schedule_expires
-    async with schedule_lock:
-        if monotonic() < schedule_expires:
-            return schedule_cache
-        today = date.today()
-        year = today.year if today.month >= 7 else today.year - 1
-        season = f'{year}-{str(year + 1)[-2:]}'
-        datasets, failed = {}, []
-        async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
-            for filename, league in LEAGUES.items():
-                try:
-                    url = f'https://raw.githubusercontent.com/openfootball/football.json/master/{season}/{filename}.json'
-                    response = await client.get(url)
-                    response.raise_for_status()
-                    datasets[league] = response.json()['matches']
-                except (httpx.HTTPError, KeyError, TypeError, ValueError):
-                    failed.append(league)
-        schedule_cache = build_analysis(datasets, failed, today, store.list_matches())
-        schedule_expires = monotonic() + (120 if failed else 1800)
+    if schedule_cache is not None and monotonic() < schedule_expires:
         return schedule_cache
+    today = date.today()
+    year = today.year if today.month >= 7 else today.year - 1
+    season = f'{year}-{str(year + 1)[-2:]}'
+    datasets, failed = {}, []
+    async def fetch_league(filename, league):
+        try:
+            url = f'https://raw.githubusercontent.com/openfootball/football.json/master/{season}/{filename}.json'
+            response = await fetch(url)
+            if not response.ok:
+                failed.append(league)
+                return
+            datasets[league] = (await response.json())['matches']
+        except (KeyError, TypeError, ValueError, OSError):
+            failed.append(league)
+
+    await asyncio.gather(*(fetch_league(filename, league) for filename, league in LEAGUES.items()))
+    schedule_cache = build_analysis(datasets, sorted(failed), today, store.list_matches())
+    schedule_expires = monotonic() + (120 if failed else 1800)
+    return schedule_cache

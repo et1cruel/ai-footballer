@@ -6,3 +6,15 @@ workers_dev = true
 
 [assets]
 directory = "./web"
+
+[[d1_databases]]
+binding = "FORECASTS"
+database_name = "ai-footballer-live"
+database_id = "227ac5f2-3118-43be-b0d3-3c84cfba220f"
+
+[triggers]
+crons = ["* * * * *"]
+
+[observability]
+enabled = true
+head_sampling_rate = 0.05

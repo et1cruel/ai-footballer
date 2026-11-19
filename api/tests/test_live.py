@@ -4,6 +4,7 @@ import pytest
 
 from football_ai.api import app
 from football_ai import live
+from football_ai.mania import raw_fixture
 
 
 def test_in_play_probabilities_follow_score_and_clock():
@@ -16,6 +17,21 @@ def test_in_play_probabilities_follow_score_and_clock():
     assert live.regulation_probabilities(1, 1, None, 'HT')['draw'] > tied['draw']
     assert live.regulation_probabilities(1, 0, None, 'LIVE') is None
     assert live.regulation_probabilities(1, 0, 110, 'ET') is None
+
+
+def test_mania_clock_and_red_cards_reach_the_model():
+    row = {'id': '1', 'date': '19/11/2026', 'time': '15:00', 'status': '90',
+           'localteam': 'Home', 'visitorteam': 'Away', 'scoretime': '1 - 0',
+           'leaguename': 'Example', 'injuryminute': '2', 'injurytime': '5', 'localteamrc': 1}
+    fixture = live._format_fixture(raw_fixture(row))
+    assert fixture['kickoff'] == '2026-11-19T15:00:00+00:00'
+    assert fixture['minute'] == 90 and fixture['extra'] == 2
+    assert fixture['announced_stoppage'] == 5
+    assert fixture['red_cards'] == {'home': 1, 'away': None}
+    assert fixture['probabilities']['home'] < live.regulation_probabilities(1, 0, 90, '2H')['home']
+    assert live._format_fixture(raw_fixture({**row, 'status': '72'}))['extra'] is None
+    assert live._format_fixture(raw_fixture({**row, 'status': '105'}))['probabilities'] is None
+    assert raw_fixture({**row, 'status': 'FT'}) is None
 
 
 def test_live_endpoint_uses_shared_provider_snapshot(monkeypatch):

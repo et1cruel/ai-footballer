@@ -7,6 +7,7 @@ model; replace it only after a real chronological benchmark improves metrics.
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from datetime import date, datetime
 from typing import Any
 
@@ -47,13 +48,30 @@ def estimate_rates(matches: list[dict], home: str, away: str, at: date,
                and m.get(home_key) is not None and m.get(away_key) is not None]
     if len(earlier) < 80 or home == away:
         return None
-    teams = {x['home'] for x in earlier} | {x['away'] for x in earlier}
-    if home not in teams or away not in teams:
-        return None
     base_h, _ = _smoothed(earlier, home_key, at, 1.45, prior=20)
     base_a, _ = _smoothed(earlier, away_key, at, 1.15, prior=20)
     home_rows = [r for r in earlier if r['home'] == home]
     away_rows = [r for r in earlier if r['away'] == away]
+    return _team_rates(home_rows, away_rows, at, home_key, away_key, base_h, base_a, len(earlier))
+
+
+def estimate_fixture_rates(matches: list[dict], fixtures: list[tuple[str, str]], at: date) -> dict:
+    """Share the league prior and team indexes across fixtures on the same date."""
+    cutoff = at.isoformat()
+    earlier = [m for m in matches if m['date'][:10] < cutoff and m.get('hg') is not None and m.get('ag') is not None]
+    if len(earlier) < 80:
+        return {}
+    base_h, _ = _smoothed(earlier, 'hg', at, 1.45, prior=20)
+    base_a, _ = _smoothed(earlier, 'ag', at, 1.15, prior=20)
+    home_rows, away_rows = defaultdict(list), defaultdict(list)
+    for row in earlier:
+        home_rows[row['home']].append(row)
+        away_rows[row['away']].append(row)
+    return {(home, away): _team_rates(home_rows[home], away_rows[away], at, 'hg', 'ag', base_h, base_a, len(earlier))
+            for home, away in fixtures if home != away}
+
+
+def _team_rates(home_rows, away_rows, at, home_key, away_key, base_h, base_a, training_matches):
     # require team-specific evidence, not just a league-wide prior
     if len(home_rows) < 4 or len(away_rows) < 4:
         return None
@@ -65,7 +83,7 @@ def estimate_rates(matches: list[dict], home: str, away: str, at: date,
     lam_a = min(4.50, max(0.20, a_for * h_against / base_a))
     return {'home': float(lam_h), 'away': float(lam_a), 'home_samples': len(home_rows),
             'away_samples': len(away_rows), 'effective_home_samples': round(h_n, 1),
-            'effective_away_samples': round(a_n, 1), 'training_matches': len(earlier)}
+            'effective_away_samples': round(a_n, 1), 'training_matches': training_matches}
 
 
 class ScoreMatrix(list):
