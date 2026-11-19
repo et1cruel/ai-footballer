@@ -1,4 +1,5 @@
 """Read live fixtures from Football Mania's public LiveScore MCP service."""
+import asyncio
 import re
 
 import httpx
@@ -7,8 +8,12 @@ ENDPOINT = 'https://livescoremcp.com/mcp'
 
 
 def live_rows():
-    with httpx.Client(timeout=5, headers={'Accept': 'application/json, text/event-stream'}) as client:
-        init = client.post(ENDPOINT, json={'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
+    return asyncio.run(async_live_rows())
+
+
+async def async_live_rows():
+    async with httpx.AsyncClient(timeout=5, headers={'Accept': 'application/json, text/event-stream'}) as client:
+        init = await client.post(ENDPOINT, json={'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
             'protocolVersion': '2025-03-26', 'capabilities': {},
             'clientInfo': {'name': 'football-ai-intelligence', 'version': '1'},
         }})
@@ -16,8 +21,9 @@ def live_rows():
         client.headers['MCP-Protocol-Version'] = init.json()['result']['protocolVersion']
         if session_id := init.headers.get('Mcp-Session-Id'):
             client.headers['Mcp-Session-Id'] = session_id
-        client.post(ENDPOINT, json={'jsonrpc': '2.0', 'method': 'notifications/initialized'}).raise_for_status()
-        response = client.post(ENDPOINT, json={'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {
+        initialized = await client.post(ENDPOINT, json={'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        initialized.raise_for_status()
+        response = await client.post(ENDPOINT, json={'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {
             'name': 'get_live_scores', 'arguments': {},
         }})
         response.raise_for_status()

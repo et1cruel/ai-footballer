@@ -1,0 +1,8 @@
+name = "ai-footballer"
+main = "src/worker.py"
+compatibility_date = "2026-11-19"
+compatibility_flags = ["python_workers", "global_fetch_strictly_public"]
+workers_dev = true
+
+[assets]
+directory = "./web"

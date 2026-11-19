@@ -107,6 +107,9 @@ curl -X POST http://127.0.0.1:8000/api/admin/import-fixtures \
 
 ## Cloudflare + Supabase
 
+- **Cloudflare Workers:** ติดตั้ง dependencies ฝั่ง Python ตามขั้นตอนด้านบน แล้วรัน `python cloudflare/prepare.py <empty-build-directory>` เพื่อจัดไฟล์เว็บและนำเข้าข้อมูล OpenFootball ชุดใหม่ จากนั้นเข้าโฟลเดอร์ที่สร้างและรัน `uvx --from workers-py pywrangler deploy`
+- Worker ใช้ฐานข้อมูลผลการแข่งขันที่แนบมากับแต่ละ deploy ส่วนโปรแกรมแข่งและผลบอลสดดึงจากผู้ให้บริการขณะใช้งาน
+
 - **Static website:** สามารถ deploy **โฟลเดอร์ `web/`** ไป Cloudflare Pages โดยไม่ต้องมี build command
 - **Backend API:** ต้องโฮสต์ FastAPI แยกต่างหากบนเซิร์ฟเวอร์ Python (Cloudflare Pages อย่างเดียวไม่สามารถรันโมเดล Python นี้ได้)
 - ที่ไฟล์ `web/config.js` ตั้ง `window.FOOTBALL_API_URL = 'https://your-python-api-host'`

@@ -5,9 +5,8 @@ from time import monotonic
 import os
 
 import httpx
-import numpy as np
 
-from .model import score_matrix, estimate_rates
+from .model import score_matrix, estimate_rates, outcome_probabilities
 from .store import list_matches
 from .mania import live_rows
 
@@ -37,13 +36,7 @@ def regulation_probabilities(home_goals, away_goals, minute, status, rates=None)
     home_rate = rates['home'] if rates else 1.3
     away_rate = rates['away'] if rates else 1.3
     matrix = score_matrix(home_rate * remaining, away_rate * remaining)
-    home, away = np.indices(matrix.shape)
-    margin = home + home_goals - away - away_goals
-    return {
-        'home': round(float(matrix[margin > 0].sum()), 5),
-        'draw': round(float(matrix[margin == 0].sum()), 5),
-        'away': round(float(matrix[margin < 0].sum()), 5),
-    }
+    return outcome_probabilities(matrix, home_goals - away_goals)
 
 
 def _format_fixture(row, history=None):

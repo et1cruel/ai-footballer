@@ -9,7 +9,6 @@ from __future__ import annotations
 import math
 from datetime import date, datetime
 from typing import Any
-import numpy as np
 
 MODEL_VERSION = 'poisson-shrinkage-1.0.0'
 
@@ -35,11 +34,10 @@ def _smoothed(rows: list[dict], key: str, at: date, baseline: float, prior: floa
     return (s + baseline * prior) / (n + prior), n
 
 
-def _poisson(lam: float, n: int = 13) -> np.ndarray:
-    p = np.empty(n, dtype=float)
-    p[0] = math.exp(-lam)
+def _poisson(lam: float, n: int = 13) -> list[float]:
+    p = [math.exp(-lam)]
     for k in range(1, n):
-        p[k] = p[k-1] * lam / k
+        p.append(p[-1] * lam / k)
     return p
 
 
@@ -63,35 +61,47 @@ def estimate_rates(matches: list[dict], home: str, away: str, at: date,
     h_against, _ = _smoothed(home_rows, away_key, at, base_a)
     a_for, a_n = _smoothed(away_rows, away_key, at, base_a)
     a_against, _ = _smoothed(away_rows, home_key, at, base_h)
-    lam_h = np.clip(base_h * (h_for / base_h) * (a_against / base_h), 0.20, 4.50)
-    lam_a = np.clip(base_a * (a_for / base_a) * (h_against / base_a), 0.20, 4.50)
+    lam_h = min(4.50, max(0.20, h_for * a_against / base_h))
+    lam_a = min(4.50, max(0.20, a_for * h_against / base_a))
     return {'home': float(lam_h), 'away': float(lam_a), 'home_samples': len(home_rows),
             'away_samples': len(away_rows), 'effective_home_samples': round(h_n, 1),
             'effective_away_samples': round(a_n, 1), 'training_matches': len(earlier)}
 
 
-def score_matrix(home_goals: float, away_goals: float, max_score: int = 15) -> np.ndarray:
+class ScoreMatrix(list):
+    def sum(self):
+        return sum(map(sum, self))
+
+
+def score_matrix(home_goals: float, away_goals: float, max_score: int = 15) -> ScoreMatrix:
     a = _poisson(home_goals, max_score+1)
     b = _poisson(away_goals, max_score+1)
-    matrix = np.outer(a, b)
-    matrix /= matrix.sum()  # truncated mass tiny for normal soccer rates
-    return matrix
+    mass = sum(a) * sum(b)
+    return ScoreMatrix([home * away / mass for away in b] for home in a)
 
 
-def score_markets(m: np.ndarray) -> dict[str, Any]:
-    p_home = float(np.tril(m, -1).sum())
-    p_draw = float(np.trace(m))
-    p_away = float(np.triu(m, 1).sum())
-    both = float(m[1:, 1:].sum())
+def outcome_probabilities(matrix, score_difference=0):
+    home = draw = away = 0.0
+    for i, row in enumerate(matrix):
+        split = min(len(row), max(0, i + score_difference))
+        home += sum(row[:split])
+        if 0 <= i + score_difference < len(row):
+            draw += row[split]
+            split += 1
+        away += sum(row[split:])
+    return {'home': round(home, 5), 'draw': round(draw, 5), 'away': round(away, 5)}
+
+
+def score_markets(m: ScoreMatrix) -> dict[str, Any]:
+    both = sum(sum(row[1:]) for row in m[1:])
     totals = {}
     for line in (0.5, 1.5, 2.5, 3.5, 4.5):
-        over = sum(float(m[i, j]) for i in range(m.shape[0])
-                   for j in range(m.shape[1]) if i+j > line)
+        over = sum(sum(row[max(0, int(line) + 1 - i):]) for i, row in enumerate(m))
         totals[str(line)] = {'over': round(over, 5), 'under': round(1-over, 5)}
-    flat = [(int(i), int(j), float(m[i, j])) for i in range(m.shape[0]) for j in range(m.shape[1])]
+    flat = [(i, j, p) for i, row in enumerate(m) for j, p in enumerate(row)]
     top = sorted(flat, key=lambda x: x[2], reverse=True)[:6]
     return {
-        'one_x_two': {'home': round(p_home, 5), 'draw': round(p_draw, 5), 'away': round(p_away, 5)},
+        'one_x_two': outcome_probabilities(m),
         'btts': {'yes': round(both, 5), 'no': round(1-both, 5)},
         'totals': totals,
         'top_scores': [{'score': f'{i}-{j}', 'p': round(p, 5)} for i, j, p in top]
@@ -135,16 +145,16 @@ def payout_unit(goals_home: int, goals_away: int, kind: str, selection: str, lin
     return sum(results) / len(results)
 
 
-def market_ev(matrix: np.ndarray, kind: str, selection: str, line: float, decimal_odds: float) -> dict[str, float]:
+def market_ev(matrix: ScoreMatrix, kind: str, selection: str, line: float, decimal_odds: float) -> dict[str, float]:
     if decimal_odds <= 1:
         raise ValueError('Invalid odds')
     win_units = 0.0
     loss_units = 0.0
     ev = 0.0
     full_win = half_win = push = half_loss = full_loss = 0.0
-    for i in range(matrix.shape[0]):
-        for j in range(matrix.shape[1]):
-            p = float(matrix[i, j]); payoff = payout_unit(i, j, kind, selection, line, decimal_odds)
+    for i, row in enumerate(matrix):
+        for j, p in enumerate(row):
+            payoff = payout_unit(i, j, kind, selection, line, decimal_odds)
             ev += p * payoff
             if payoff > 1e-8:
                 win_units += p * payoff / (decimal_odds - 1)
