@@ -3,6 +3,7 @@ main = "src/worker.py"
 compatibility_date = "2026-11-19"
 compatibility_flags = ["python_workers", "global_fetch_strictly_public"]
 workers_dev = true
+routes = [{ pattern = "ai-footballer.et1cruel.com", custom_domain = true }]
 
 [assets]
 directory = "./web"
