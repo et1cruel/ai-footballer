@@ -40,6 +40,26 @@ function liveFixtureCard(fixture) {
   const reds = fixture.red_cards || {};
   const confirmedCards = [[home, reds.home], [away, reds.away]]
     .filter(([, count]) => count > 0).map(([team, count]) => `${team} ใบแดง ${count} ใบ`);
+  const context = fixture.context;
+  const factorLabels = {team_form:'ฟอร์มล่าสุด',head_to_head:'ผลงานที่เจอกัน',player_history:'ผลงานนักเตะ',player_recent:'ประตูและแอสซิสต์นัดล่าสุด',live_shots:'ยิงเข้ากรอบ'};
+  const compared = (fixture.factors || []).map(factor => factorLabels[factor]).filter(Boolean);
+  const contextDetails = context ? `<details class="live-context"><summary>ดูข้อมูลที่ใช้วิเคราะห์</summary>
+    ${[['home', home], ['away', away]].map(([side, name]) => {
+      const form = context.recent_form[side];
+      const players = context.player_history[side];
+      const recent = context.recent_players?.[side];
+      const stats = form ? `${form.matches} นัด ชนะ ${form.wins} เสมอ ${form.draws} แพ้ ${form.matches - form.wins - form.draws} · ยิง ${form.goals} เสีย ${form.conceded}` : 'ฟีดไม่มีผลย้อนหลังที่ยืนยันได้';
+      return `<p><strong>${clean(name)}</strong><small>${stats}</small>
+        ${players.map(player => `<small>${clean(player.name)} · ฤดูกาล ${clean(player.season)} · ${player.appearances} นัด ยิง ${player.goals}${player.assists == null ? '' : ` แอสซิสต์ ${player.assists}`}</small>`).join('') || '<small>ยังไม่มีประวัติรายฤดูกาลที่ยืนยันได้</small>'}
+        ${recent ? `<small>นักเตะที่ยิงหรือแอสซิสต์นัดก่อน (${clean(recent.match_date)}) · ${clean(recent.players.map(player => player.name).join(', '))}</small>` : ''}</p>`;
+    }).join('')}
+    ${context.head_to_head ? `<p><small>พบกัน ${context.head_to_head.matches} นัด · ${clean(home)} ชนะ ${context.head_to_head.wins} · เสมอ ${context.head_to_head.draws}</small></p>` : ''}
+    ${context.live_fresh && context.shots_on_target.home != null && context.shots_on_target.away != null ? `<p>ยิงเข้ากรอบ ${context.shots_on_target.home}–${context.shots_on_target.away}</p>` : ''}
+    ${context.events.length ? `<p><strong>เหตุการณ์ที่ฟีดรายงานล่าสุด</strong>${context.events.slice().reverse().map(event => {
+      const tags = {goal:'ประตู',yellowcard:'ใบเหลือง',redcard:'ใบแดง',yellowred:'ใบเหลืองที่สอง',subst:'เปลี่ยนตัว'};
+      return `<small>${event.minute ?? '–'}′${event.extra ? `+${event.extra}` : ''} · ${tags[event.type]} · ${clean(event.player)}${event.outgoing ? ` แทน ${clean(event.outgoing)}` : ''}</small>`;
+    }).join('')}</p>` : ''}
+    <small>ข้อมูลประกอบดึงเมื่อ ${clean(thaiTime(context.observed_at))}</small></details>` : '<small>รอข้อมูลฟอร์มและเหตุการณ์เพิ่มเติมจากฟีด</small>';
   const score = home_goals == null || away_goals == null ? '–' : `${home_goals}–${away_goals}`;
   let forecast = '<small>ช่วงนี้ไม่มีเปอร์เซ็นต์ผลเวลา 90 นาที</small>';
   if (probabilities) {
@@ -47,16 +67,16 @@ function liveFixtureCard(fixture) {
     const highest = Math.max(...outcomes.map(([, probability]) => probability));
     const likely = outcomes.filter(([, probability]) => probability === highest);
     const summary = likely.length === 1 ? `แนวโน้มสูงสุด: ${likely[0][0]}` : 'โอกาสสูงสุดสูสีกัน';
-    const basis = fixture.basis === 'team_history' ? 'สกอร์ เวลา และสถิติย้อนหลังของสองทีม' : 'สกอร์และเวลา โดยตั้งอัตราทำประตูเริ่มต้นเท่ากัน';
+    const basis = ['สกอร์และเวลา', ...(fixture.basis === 'team_history' ? ['สถิติทีมระยะยาว'] : []), ...compared].join(' · ');
     forecast = `<div class="forecast-lead"><span>${clean(summary)}</span><strong>${fmt(highest)}</strong></div>
       <small>${clean(basis)}${confirmedCards.length ? ' · ปรับตามใบแดง' : ''}</small><dl class="live-probabilities">${outcomes.map(([label, probability]) => `
       <div class="${probability === highest ? 'leading' : ''}"><dt>${clean(label)}</dt><dd>${fmt(probability)}</dd></div>`).join('')}</dl>`;
   }
-  return `<article class="fixture-item live-analysis-card"><div>
+  return `<article class="fixture-item live-analysis-card" data-live-id="${clean(fixture.id)}"><div>
     <small>${clean([country, league, clock].filter(Boolean).join(' · '))}</small>
     <strong>${clean(home)} <span class="live-score">${clean(score)}</span> ${clean(away)}</strong>
     ${confirmedCards.length ? `<small>${clean(confirmedCards.join(' · '))}</small>` : ''}
-    ${forecast}</div></article>`;
+    ${forecast}${contextDetails}</div></article>`;
 }
 
 async function loadUpcomingAnalysis() {
@@ -132,8 +152,12 @@ async function loadLiveAnalysis() {
         const feedStatus = `<p class="helper">${data.fixtures.length} คู่กำลังแข่ง · ดึงข้อมูลจาก ${source} เมื่อ ${clean(updated)} น. · ${age} วินาทีที่แล้ว</p>
           ${stale ? alertBar('ข้อมูลล่าสุดเกิน 1 นาที ซ่อนเปอร์เซ็นต์จนกว่าจะได้รับข้อมูลใหม่', 'warning') : ''}`;
         if (data.fixtures.length) {
+          const expanded = new Set(Array.from(target.querySelectorAll('.live-context[open]'), node => node.closest('[data-live-id]')?.dataset.liveId));
           target.innerHTML = `${feedStatus}
             <div class="fixture-list">${data.fixtures.map(fixture => liveFixtureCard(stale ? {...fixture, probabilities: null} : fixture)).join('')}</div>`;
+          target.querySelectorAll('.live-context').forEach(node => {
+            if (expanded.has(node.closest('[data-live-id]')?.dataset.liveId)) node.open = true;
+          });
         } else {
           target.innerHTML = `${feedStatus}<p>ขณะนี้ฟีดไม่มีคู่ที่กำลังแข่ง</p>`;
         }
@@ -167,7 +191,7 @@ function renderToday(){
     ? alertBar('สถิติที่ใช้วิเคราะห์เป็นข้อมูลจำลองสำหรับทดสอบระบบ', 'warning')
     : '';
   return title('ฟุตบอลวันนี้', 'ดูสกอร์สด ผลการแข่งขัน และเวลาเริ่มแข่งตามเวลาไทย')
-    + panel('วิเคราะห์คู่ที่กำลังแข่ง', `<p class="helper">โอกาสชนะหรือเสมอใน 90 นาทีรวมทดเจ็บ ใช้สกอร์และนาทีแข่ง ร่วมกับใบแดงและสถิติทีมเมื่อมีข้อมูล</p>
+    + panel('วิเคราะห์คู่ที่กำลังแข่ง', `<p class="helper">โอกาสชนะหรือเสมอใน 90 นาทีรวมทดเจ็บ ใช้สกอร์ เวลา ฟอร์มทีม ประวัตินักเตะ และเหตุการณ์ในสนามตามข้อมูลที่ฟีดส่งมา</p>
       <div id="live-analysis" aria-live="polite">กำลังตรวจคู่ที่กำลังแข่ง…</div>`,
       '<a class="live-scores-source" href="https://www.365scores.com/th/football/live" target="_blank" rel="noopener noreferrer">เปิดรายการสด 365Scores ↗</a>')
     + panel('ตรวจผลคำทายสด 70% ขึ้นไป', `<div id="live-audit">กำลังโหลดผลตรวจคำทาย…</div>`)

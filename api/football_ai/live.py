@@ -9,10 +9,11 @@ import httpx
 from .model import score_matrix, estimate_rates, outcome_probabilities
 from .store import list_matches
 from .mania import live_rows
+from .match_context import match_rates
 
 
 ESTIMATE_STATUSES = {'1H', 'HT', '2H'}
-LIVE_MODEL_VERSION = 'poisson-live-2'
+LIVE_MODEL_VERSION = 'poisson-live-3'
 LIVE_FIXTURES_URL = 'https://v3.football.api-sports.io/fixtures'
 _lock = Lock()
 _snapshot = None
@@ -47,7 +48,7 @@ def regulation_probabilities(home_goals, away_goals, minute, status, rates=None,
     return outcome_probabilities(matrix, home_goals - away_goals)
 
 
-def _format_fixture(row, history=None):
+def _format_fixture(row, history=None, context=None, now=None):
     fixture = row['fixture']
     clock = fixture['status']
     status, minute = clock['short'], clock.get('elapsed')
@@ -65,6 +66,13 @@ def _format_fixture(row, history=None):
         rates = estimate_rates([match for match in eligible if match['league'] == league], home, away, match_date)
     extra, announced = clock.get('extra'), clock.get('announced')
     reds = row.get('red_cards')
+    basis = 'team_history' if rates else 'equal_rates'
+    factors = []
+    fresh_context = False
+    if context and now:
+        observed = datetime.fromisoformat(context['observed_at'])
+        fresh_context = 0 <= (now - observed).total_seconds() <= 180
+        rates, factors = match_rates(context, rates, (home_goals, away_goals), fresh_context)
     return {
         'id': fixture['id'],
         'kickoff': fixture.get('date'),
@@ -81,7 +89,9 @@ def _format_fixture(row, history=None):
         'away_goals': away_goals,
         'probabilities': regulation_probabilities(home_goals, away_goals, minute, status, rates,
                                                  extra=extra, announced=announced, red_cards=reds),
-        'basis': 'team_history' if rates else 'equal_rates',
+        'basis': basis,
+        'factors': factors,
+        'context': {**context, 'live_fresh': fresh_context} if context else None,
     }
 
 

@@ -5,6 +5,8 @@ import pytest
 from football_ai.api import app
 from football_ai import live
 from football_ai.mania import raw_fixture
+from football_ai.match_context import match_context, match_rates
+from datetime import date
 
 
 def test_in_play_probabilities_follow_score_and_clock():
@@ -32,6 +34,36 @@ def test_mania_clock_and_red_cards_reach_the_model():
     assert live._format_fixture(raw_fixture({**row, 'status': '72'}))['extra'] is None
     assert live._format_fixture(raw_fixture({**row, 'status': '105'}))['probabilities'] is None
     assert raw_fixture({**row, 'status': 'FT'}) is None
+
+
+def test_match_context_changes_rates_without_using_current_match_as_history():
+    def game(i, day, home, away, score):
+        return {'id': str(i), 'date': day, 'status': 'FT', 'scoretime': score,
+                'gs_localteamid': home, 'gs_visitorteamid': away}
+
+    detail = {
+        'gs_localteamid': '1', 'gs_visitorteamid': '2', 'scoretime': '0 - 0',
+        'localteamshapefixtures': [game(i, '18/11/2026', '1', '3', '3 - 0') for i in range(3)]
+                                 + [game(9, '19/11/2026', '1', '2', '0 - 10')],
+        'visitorteamshapefixtures': [game(i, '17/11/2026', '4', '2', '2 - 0') for i in range(3)],
+        'lineups': {'localteam': [{'id': 'p1', 'name': 'Home player'}],
+                    'visitorteam': [{'id': 'p2', 'name': 'Away player'}]},
+        'commentaries': {'playerstats': {
+            'localteam': [{'shotsOn': '1'}] * 8, 'visitorteam': [{'shotsOn': '0'}] * 8}},
+    }
+    past = {
+        'home': {**game(1, '18/11/2026', '1', '3', '3 - 0'), 'events': [
+            {'team': 'localteam', 'type': 'goal', 'playerId': 'p1'}]},
+        'away': {**game(2, '17/11/2026', '4', '2', '2 - 1'), 'events': [
+            {'team': 'visitorteam', 'type': 'goal', 'playerId': 'p2'}]},
+    }
+    context, _ = match_context(detail, date(2026, 11, 19), '2026-11-19T23:00:00+00:00', {}, past)
+    assert context['recent_form']['home']['wins'] == 3
+    assert context['recent_players']['home']['players'][0]['name'] == 'Home player'
+    rates, factors = match_rates(context, None, (0, 0))
+    assert rates['home'] > rates['away']
+    assert factors == ['team_form', 'player_recent', 'live_shots']
+    assert match_rates(context, None, (1, 0))[1] == ['team_form']
 
 
 def test_live_endpoint_uses_shared_provider_snapshot(monkeypatch):

@@ -15,7 +15,7 @@ def main():
     source.mkdir(parents=True, exist_ok=True)
     for name in ('wrangler.toml', 'pyproject.toml'):
         shutil.copyfile(root / 'cloudflare' / name, target / name)
-    for name in ('worker.py', 'ledger.py'):
+    for name in ('worker.py', 'ledger.py', 'context_feed.py'):
         shutil.copyfile(root / 'cloudflare' / name, source / name)
     shutil.copytree(root / 'cloudflare' / 'migrations', target / 'migrations', dirs_exist_ok=True)
     shutil.copytree(root / 'api' / 'football_ai', source / 'football_ai', dirs_exist_ok=True,

@@ -16,6 +16,7 @@ from football_ai import api, store
 from football_ai.live import LIVE_MODEL_VERSION, _format_fixture
 from football_ai.mania import async_live_rows
 from football_ai.schedule import LEAGUES, build_analysis
+from context_feed import load_contexts, refresh_contexts
 from ledger import performance as live_performance, record_forecasts, settle_forecasts
 from seed import DATABASE
 
@@ -37,7 +38,7 @@ class Default(asgi.entrypoint(app)):
             path = urlsplit(request.url).path
             if path == '/api/live-fixtures':
                 await restore_seed()
-                snapshot = await live()
+                snapshot = await live(self.env.FORECASTS)
                 if snapshot['state'] == 'ready' and snapshot['fixtures']:
                     wait_until(record_snapshot(self.env.FORECASTS, snapshot))
                 return Response.json(snapshot)
@@ -52,8 +53,13 @@ class Default(asgi.entrypoint(app)):
         await restore_seed()
         now = datetime.now(timezone.utc)
         try:
-            data = await live()
+            data = await live(self.env.FORECASTS)
             if data['state'] == 'ready' and data['fixtures']:
+                try:
+                    await refresh_contexts(self.env.FORECASTS, data['fixtures'], now)
+                except (httpx.HTTPError, KeyError, TypeError, ValueError):
+                    pass
+                data = await live(self.env.FORECASTS, refresh=True)
                 await record_snapshot(self.env.FORECASTS, data)
         finally:
             await settle_forecasts(self.env.FORECASTS, now)
@@ -103,17 +109,24 @@ async def record_snapshot(db, snapshot):
 
 
 @app.get('/api/live-fixtures')
-async def live():
+async def live_route(env=asgi.env):
+    return await live(env.FORECASTS)
+
+
+async def live(db, refresh=False):
     global live_cache, live_expires
-    if live_cache is not None and monotonic() < live_expires:
+    if not refresh and live_cache is not None and monotonic() < live_expires:
         return live_cache
     # Keep async fetches owned by the current request. Sharing an asyncio lock
     # across Worker requests can strand waiters on another I/O context.
     try:
         rows = await async_live_rows()
         history = store.list_matches() if rows else []
-        live_cache = {'state': 'ready', 'fixtures': [_format_fixture(row, history) for row in rows],
-                      'updated_at': datetime.now(timezone.utc).isoformat(), 'source': 'football_mania',
+        now = datetime.now(timezone.utc)
+        contexts = await load_contexts(db, [str(row['fixture']['id']) for row in rows])
+        live_cache = {'state': 'ready', 'fixtures': [
+            _format_fixture(row, history, contexts.get(str(row['fixture']['id'])), now) for row in rows],
+                      'updated_at': now.isoformat(), 'source': 'football_mania',
                       'model': LIVE_MODEL_VERSION}
     except (httpx.HTTPError, AttributeError, IndexError, KeyError, TypeError, ValueError):
         live_cache = {'state': 'unavailable', 'fixtures': [], 'updated_at': None, 'source': 'football_mania'}
