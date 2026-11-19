@@ -6,8 +6,10 @@ const clean = x => String(x ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt
 const fmt = x => Number.isFinite(Number(x)) ? (Number(x)*100).toFixed(1)+'%' : '—';
 const pct = x => Math.min(100,Math.max(0,Number(x)*100));
 const thaiTime = x => new Date(x).toLocaleString('th-TH',{timeZone:'Asia/Bangkok',dateStyle:'medium',timeStyle:'short'});
+const thaiDate = () => new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Bangkok',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const localTomorrow = () => { const d = new Date();d.setDate(d.getDate()+1);return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Bangkok',year:'numeric',month:'2-digit',day:'2-digit'}).format(d) };
-const state = {page:'today',meta:null,fixtures:[],league:'',home:'',away:'',matchDate:localTomorrow(),marketTab:'overview',predict:null,performance:null,oddsResult:null,error:'',loading:false};
+const state = {page:location.hash === '#forecast-results' ? 'forecast-results' : 'today',meta:null,fixtures:[],league:'',home:'',away:'',matchDate:localTomorrow(),marketTab:'overview',predict:null,performance:null,oddsResult:null,error:'',loading:false};
+const historyState = {date:thaiDate(), cohort:'all', status:'all', data:null};
 async function api(path,options={}) {
   const response=await fetch(BASE+'/api'+path,options);
   let data;try{data=await response.json()}catch{throw Error('เซิร์ฟเวอร์ไม่ส่งข้อมูล JSON')}
@@ -18,8 +20,15 @@ const noData = (title,message) => `<div class="empty-state"><div class="empty-ic
 const alertBar=(message,kind='info')=>`<div class="alert ${kind}">${clean(message)}</div>`;
 const panel=(title,content,extra='')=>`<section class="panel"><div class="panel-header"><h2>${title}</h2>${extra}</div><div class="panel-body">${content}</div></section>`;
 const badgeMode=()=>state.meta?.data_mode==='demo_only'?'demo':state.meta?.data_mode==='real_or_mixed'?'real':'empty';
-function setPage(page){state.page=page;state.error='';render();if(page==='performance')loadPerformance()}
-function headers(){const h={today:'บอลวันนี้',analysis:'วิเคราะห์คู่บอล',performance:'ประสิทธิภาพ AI',settings:'ข้อมูลและการตั้งค่า'};$('page-caption').textContent=h[state.page]||'บอลวันนี้';document.querySelectorAll('[data-page]').forEach(el=>el.classList.toggle('active',el.dataset.page===state.page));}
+function setPage(page){
+  state.page=page;
+  state.error='';
+  if (page === 'forecast-results' && location.hash !== '#forecast-results') history.pushState(null, '', '#forecast-results');
+  if (page !== 'forecast-results' && location.hash === '#forecast-results') history.pushState(null, '', location.pathname + location.search);
+  render();
+  if(page==='performance')loadPerformance();
+}
+function headers(){const h={today:'บอลวันนี้',analysis:'วิเคราะห์คู่บอล','forecast-results':'ผลคำทาย AI',performance:'ประสิทธิภาพ AI',settings:'ข้อมูลและการตั้งค่า'};$('page-caption').textContent=h[state.page]||'บอลวันนี้';document.querySelectorAll('[data-page]').forEach(el=>{const active=el.dataset.page===state.page;el.classList.toggle('active',active);if(active)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current')});}
 function modeHeader(){const el=$('modeBadge');if(!state.meta){el.className='pill muted';el.textContent='API ออฟไลน์';return}if(badgeMode()==='demo'){el.className='pill demo';el.textContent='สถิติจำลอง DEMO'}else if(badgeMode()==='real'){el.className='pill';el.textContent='มีสถิตินำเข้า'}else{el.className='pill muted';el.textContent='ยังไม่มีสถิติสำหรับวิเคราะห์'}$('sidebar-status').textContent=state.meta?'ระบบ API พร้อมใช้งาน':'ยังไม่เชื่อมต่อ API';}
 function title(t,sub){return `<div class="intro"><div><h1>${t}</h1><p>${sub}</p></div></div>`}
 function fixturesArea(){if(!state.fixtures.length)return noData('ยังไม่มีตารางแข่งที่ยืนยันแล้ว','ระบบจะไม่สร้างคู่บอลวันนี้ขึ้นมาเอง ให้นำเข้าไฟล์โปรแกรมแข่งจากแหล่งข้อมูลที่อนุญาต หรือเลือกทีมเพื่อวิเคราะห์คู่สมมติ');return `<div class="fixture-list">${state.fixtures.map(f=>`<div class="fixture-item"><div><strong>${clean(f.home)} <span class="muted">vs</span> ${clean(f.away)}</strong><small>${clean(f.league)} · ${clean(thaiTime(f.kickoff))}</small></div><button class="ghost-button" data-fixture="${clean(f.id)}">วิเคราะห์คู่นี้ →</button></div>`).join('')}</div>`}
@@ -104,6 +113,79 @@ async function loadUpcomingAnalysis() {
 
 let liveAnalysisPending = false;
 let liveAuditCheckedAt = 0;
+
+const forecastStatuses = {correct:'ทายถูก', wrong:'ทายผิด', pending:'รอผล'};
+let historyRequest = 0;
+
+function renderForecastHistory() {
+  const filters = `<div class="forecast-filters">
+    <div class="field"><label for="forecast-date">วันที่บันทึก (เวลาไทย)</label><input type="date" id="forecast-date" min="2000-01-01" max="${thaiDate()}" value="${clean(historyState.date)}"></div>
+    <div class="field"><label for="forecast-cohort">ชุดคำทาย</label><select id="forecast-cohort">
+      <option value="all"${historyState.cohort === 'all' ? ' selected' : ''}>ทุกคู่ที่บันทึก</option>
+      <option value="win70"${historyState.cohort === 'win70' ? ' selected' : ''}>ทายทีมชนะ 70% ขึ้นไป</option>
+    </select></div>
+    <div class="field"><label for="forecast-status">สถานะ</label><select id="forecast-status">
+      <option value="all">ทุกสถานะ</option>
+      ${Object.entries(forecastStatuses).map(([key, label]) => `<option value="${key}"${historyState.status === key ? ' selected' : ''}>${label}</option>`).join('')}
+    </select></div>
+    <button type="button" class="ghost-button" id="forecast-refresh">อัปเดตผล</button>
+  </div>`;
+  return title('ผลคำทาย AI', 'เทียบคำทายที่บันทึกระหว่างแข่งกับผลครบ 90 นาทีรวมทดเจ็บ')
+    + panel('ประวัติคำทาย', `${filters}<div id="forecast-history-list" aria-live="polite">กำลังโหลดผลคำทาย…</div>`);
+}
+
+function renderForecastMatches(data) {
+  const target = $('forecast-history-list');
+  if (!target) return;
+  const {correct, wrong, pending} = data.counts;
+  const settled = correct + wrong;
+  const stats = [
+    ['ทายถูก', correct, 'correct'], ['ทายผิด', wrong, 'wrong'], ['รอผล', pending, 'pending'],
+    ['ความแม่นจากคู่ยืนยันผล', settled ? fmt(correct / settled) : '—', 'accuracy'],
+  ];
+  const visible = data.matches.filter(match => historyState.status === 'all' || match.result === historyState.status);
+  const rule = data.cohort === 'win70' ? 'นับครั้งแรกที่โมเดลให้ทีมใดทีมหนึ่งชนะ 70% ขึ้นไปต่อคู่' : 'นับคำทายผลที่มีโอกาสสูงสุดครั้งแรกต่อคู่ รวมคำทายเสมอ';
+  target.innerHTML = `<div class="forecast-metrics">${stats.map(([name, value, style]) =>
+    `<div class="forecast-metric ${style}"><span>${name}</span><strong>${value}</strong></div>`).join('')}</div>
+    <p class="helper">${rule} · ยืนยันผลแล้ว ${settled} จาก ${data.matches.length} คู่ · ผลจาก <a href="https://football-mania.com/th/" target="_blank" rel="noopener noreferrer">Football Mania</a></p>
+    ${visible.length ? `<div class="fixture-list">${visible.map(forecastResultCard).join('')}</div>`
+      : noData('ไม่มีคำทายที่ตรงกับตัวกรอง', 'เลือกวันที่หรือเปลี่ยนตัวกรองเพื่อดูรายการอื่น')}`;
+}
+
+function forecastResultCard(match) {
+  const pick = match.pick === 'draw' ? 'เสมอ' : `${match.pick === 'home' ? match.home : match.away} ชนะ`;
+  const clock = `${match.minute}′${match.extra ? `+${match.extra}` : ''}`;
+  const score = match.result === 'pending' ? '—' : `${match.final_home}–${match.final_away}`;
+  return `<article class="fixture-item forecast-result-card">
+    <div class="forecast-result-main"><strong>${clean(match.home)} · ${clean(match.away)}</strong>
+      <small>${clean(thaiTime(match.observed_at))} · นาที ${clock} · สกอร์ตอนทาย ${match.home_goals}–${match.away_goals}</small>
+      <span>AI ทาย <b>${clean(pick)} · ${fmt(match.pick_p)}</b></span></div>
+    <div class="forecast-result-score"><small>สกอร์จริง</small><strong>${score}</strong></div>
+    <span class="forecast-status ${clean(match.result)}">${forecastStatuses[match.result]}</span>
+  </article>`;
+}
+
+async function loadForecastHistory({quiet = false} = {}) {
+  const target = $('forecast-history-list');
+  if (!target) return;
+  const sequence = ++historyRequest;
+  if (!quiet) {
+    target.textContent = 'กำลังโหลดผลคำทาย…';
+    historyState.data = null;
+  }
+  try {
+    const query = new URLSearchParams({date:historyState.date, cohort:historyState.cohort});
+    const data = await api('/forecast-history?' + query, {cache:'no-store'});
+    if (!target.isConnected || sequence !== historyRequest) return;
+    historyState.data = data;
+    renderForecastMatches(data);
+  } catch (err) {
+    if (target.isConnected && sequence === historyRequest && (!quiet || !historyState.data)) {
+      target.innerHTML = alertBar(err.message, 'error');
+    }
+  }
+}
+
 async function loadLiveAudit() {
   const target = $('live-audit');
   if (!target) return;
@@ -194,7 +276,8 @@ function renderToday(){
     + panel('วิเคราะห์คู่ที่กำลังแข่ง', `<p class="helper">โอกาสชนะหรือเสมอใน 90 นาทีรวมทดเจ็บ ใช้สกอร์ เวลา ฟอร์มทีม ประวัตินักเตะ และเหตุการณ์ในสนามตามข้อมูลที่ฟีดส่งมา</p>
       <div id="live-analysis" aria-live="polite">กำลังตรวจคู่ที่กำลังแข่ง…</div>`,
       '<a class="live-scores-source" href="https://www.365scores.com/th/football/live" target="_blank" rel="noopener noreferrer">เปิดรายการสด 365Scores ↗</a>')
-    + panel('ตรวจผลคำทายสด 70% ขึ้นไป', `<div id="live-audit">กำลังโหลดผลตรวจคำทาย…</div>`)
+    + panel('ตรวจผลคำทายสด 70% ขึ้นไป', `<div id="live-audit">กำลังโหลดผลตรวจคำทาย…</div>`,
+      '<a class="live-scores-source" href="#forecast-results">ดูประวัติทั้งหมด →</a>')
     + panel('โปรแกรมแข่งและโอกาสชนะ 14 วัน', `<div id="upcoming-analysis" aria-live="polite">กำลังโหลดโปรแกรมและวิเคราะห์...</div>`)
     + liveScoresPanel()
     + demoWarning
@@ -245,13 +328,37 @@ function renderPerformance(){let body=title('ประสิทธิภาพ�
  return body+`<div class="cards"><div class="summary-card"><span class="small">แมตช์ที่ทดสอบได้</span><strong>${item.sample_size}</strong><small>นัดนอกช่วงฝึกของแต่ละวัน</small></div><div class="summary-card"><span class="small">ทายผล 1X2 ตรง</span><strong>${fmt(item.accuracy)}</strong><small>ไม่บ่งบอกความแม่นของเปอร์เซ็นต์</small></div><div class="summary-card"><span class="small">Multiclass Log Loss</span><strong>${item.log_loss}</strong><small>ยิ่งต่ำยิ่งดี</small></div></div>`+panel('รายงานการทดสอบ',`<div class="market-list"><div class="market-row"><span>Multiclass Brier Score (ยิ่งต่ำยิ่งดี)</span><strong>${item.brier_multiclass}</strong></div><div class="market-row"><span>ข้ามข้อมูลไม่พอ</span><strong>${item.skipped} นัด</strong></div><div class="market-row"><span>Baseline Log Loss (ความถี่ลีกย้อนหลัง)</span><strong>${item.baseline_log_loss}</strong></div><div class="market-row"><span>ดีกว่า Baseline ตาม Log Loss</span><strong class="${item.beats_frequency_baseline?'good':'bad'}">${item.beats_frequency_baseline?'ใช่':'ยังไม่ผ่าน'}</strong></div><div class="market-row"><span>โมเดล</span><strong>${clean(item.model)}</strong></div></div><p class="helper">${clean(item.method)} · ยังไม่มีการทดสอบเปรียบเทียบกับราคาตลาดหรือรับรองผลกำไร</p>`);
 }
 function renderSettings(){return title('ข้อมูลและวิธีใช้งาน','สถิติที่ใช้มาจากแหล่งข้อมูลที่คุณนำเข้า ไม่มีการแสดงผลบอลสดปลอม')+panel('สถานะระบบ',`<div class="market-list"><div class="market-row"><span>API</span><strong class="good">${state.meta?'ออนไลน์':'ออฟไลน์'}</strong></div><div class="market-row"><span>ประเภทข้อมูล</span><strong>${badgeMode()==='demo'?'DEMO':badgeMode()==='real'?'นำเข้าเอง':'ยังไม่มีข้อมูล'}</strong></div><div class="market-row"><span>โมเดล</span><strong>${clean(state.meta?.model||'—')}</strong></div><div class="market-row"><span>จำนวนลีก</span><strong>${state.meta?.leagues?.length??0}</strong></div></div>`)+panel('คู่มือเริ่มต้น',`<div class="helper"><strong>เปิดเว็บ:</strong> <span class="kbd">uvicorn football_ai.api:app --app-dir api --port 8000</span><br><strong>นำเข้าไฟล์ CSV:</strong> <span class="kbd">PYTHONPATH=api python scripts/import_csv.py E0.csv</span><br><strong>โหลดข้อมูลจากแหล่ง:</strong> <a href="https://www.football-data.co.uk/data.php" target="_blank" rel="noopener noreferrer">Football-Data.co.uk</a><br><strong>Deploy:</strong> โฮสต์ web/ บน Cloudflare Pages และ API Python บนโฮสต์ที่รัน Python ได้ พร้อมตั้งค่า URL ใน web/config.js<br><br>อ่าน README.md ภายใน ZIP เพื่อดูขั้นตอนโดยละเอียด</div>`)+panel('ขอบเขตการวิเคราะห์',`<div class="helper">✓ 1X2, สูง–ต่ำ, BTTS, สกอร์, คำนวณ EV สำหรับต่อ–รองและควบลูก<br>△ ครึ่งแรก เตะมุม ใบเหลือง จะแสดงเฉพาะเมื่อมีข้อมูลพอ และส่วนทดลองยังไม่ได้ยืนยันผลทดสอบ<br>✕ ยังไม่เชื่อมข้อมูลบอลสดแบบเรียลไทม์ ไม่มีระบบแทงบอลอัตโนมัติ และไม่มีการรับประกันผล</div>`)}
-function render(){headers();modeHeader();$('page').innerHTML=state.page==='today'?renderToday():state.page==='analysis'?renderAnalysis():state.page==='performance'?renderPerformance():renderSettings();if(state.page==='today'){loadLiveAnalysis();loadUpcomingAnalysis();loadLiveAudit()}}
-async function load(){try{const [meta,fixtures]=await Promise.all([api('/meta'),api('/fixtures')]);state.meta=meta;state.fixtures=fixtures.fixtures||[];const first=meta.leagues?.[0];state.league=first?.code||'';state.home=first?.teams?.[0]||'';state.away=first?.teams?.[1]||'';render();}catch(err){state.meta=null;if(state.page==='today'){render()}else{$('page').innerHTML=title('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์','เปิดเว็บไซต์ผ่าน FastAPI หรือกำหนด URL API ที่ถูกต้อง')+alertBar(err.message,'error');modeHeader()}}}
+function render(){headers();modeHeader();$('page').innerHTML=state.page==='today'?renderToday():state.page==='analysis'?renderAnalysis():state.page==='performance'?renderPerformance():state.page==='forecast-results'?renderForecastHistory():renderSettings();if(state.page==='today'){loadLiveAnalysis();loadUpcomingAnalysis();loadLiveAudit()}if(state.page==='forecast-results')loadForecastHistory()}
+async function load(){try{const [meta,fixtures]=await Promise.all([api('/meta'),api('/fixtures')]);state.meta=meta;state.fixtures=fixtures.fixtures||[];const first=meta.leagues?.[0];state.league=first?.code||'';state.home=first?.teams?.[0]||'';state.away=first?.teams?.[1]||'';render();}catch(err){state.meta=null;if(state.page==='today'||state.page==='forecast-results'){render()}else{$('page').innerHTML=title('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์','เปิดเว็บไซต์ผ่าน FastAPI หรือกำหนด URL API ที่ถูกต้อง')+alertBar(err.message,'error');modeHeader()}}}
 setInterval(() => {
   if (document.hidden) return;
   loadLiveAnalysis();
   if (Date.now() - liveAuditCheckedAt >= 60000) loadLiveAudit();
 }, 20000);
+setInterval(() => {
+  if (!document.hidden && state.page === 'forecast-results') loadForecastHistory({quiet:true});
+}, 60000);
+window.addEventListener('hashchange', () => {
+  if (location.hash === '#forecast-results' && state.page !== 'forecast-results') setPage('forecast-results');
+  else if (!location.hash && state.page === 'forecast-results') setPage('today');
+});
+document.addEventListener('click', e => {
+  if (e.target.closest('#forecast-refresh')) loadForecastHistory();
+});
+document.addEventListener('change', e => {
+  if (e.target.id === 'forecast-status') {
+    historyState.status = e.target.value;
+    if (historyState.data) renderForecastMatches(historyState.data);
+  }
+  if (e.target.id === 'forecast-date' && e.target.value && e.target.validity.valid) {
+    historyState.date = e.target.value;
+    loadForecastHistory();
+  }
+  if (e.target.id === 'forecast-cohort') {
+    historyState.cohort = e.target.value;
+    loadForecastHistory();
+  }
+});
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     loadLiveAnalysis();

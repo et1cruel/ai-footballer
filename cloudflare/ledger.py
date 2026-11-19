@@ -1,6 +1,6 @@
 """Record in-play forecasts before the result and audit them against regulation scores."""
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import httpx
 
@@ -120,3 +120,37 @@ async def performance(db):
         """).bind(LIVE_MODEL_VERSION).all()
     return {'model': LIVE_MODEL_VERSION, 'samples': result['results'], 'recent': recent['results'],
             'result_source': 'football_mania', 'window_days': 30}
+
+
+async def forecast_history(db, day: date, cohort: str):
+    thailand = timezone(timedelta(hours=7))
+    start = datetime.combine(day, time.min, thailand).astimezone(timezone.utc)
+    # All observations are recorded within three hours of kickoff. Include
+    # these earlier candidates so a match straddling midnight is counted once.
+    result = await db.prepare("""
+        WITH ranked AS (
+          SELECT f.*, ROW_NUMBER() OVER(
+            PARTITION BY match_id ORDER BY observed_at, model, sample
+          ) AS position
+          FROM live_forecasts f
+          WHERE f.observed_at >= ? AND f.observed_at < ? AND f.pick IS NOT NULL
+            AND ((? = 'win70' AND f.sample = 'win_70') OR (? = 'all' AND f.sample <> 'win_70'))
+        )
+        SELECT f.match_id, f.model, m.home, m.away, f.observed_at, f.minute, f.extra,
+               f.pick, f.pick_p, f.home_goals, f.away_goals,
+               m.final_home, m.final_away, m.confirmed_at,
+               CASE WHEN m.confirmed_at IS NULL THEN 'pending'
+                    WHEN f.pick = CASE WHEN m.final_home > m.final_away THEN 'home'
+                                       WHEN m.final_home < m.final_away THEN 'away' ELSE 'draw' END
+                    THEN 'correct' ELSE 'wrong' END AS result
+        FROM ranked f JOIN live_matches m ON m.id=f.match_id
+        WHERE f.position=1 AND f.observed_at >= ?
+        ORDER BY f.observed_at DESC, f.match_id
+        """).bind((start - timedelta(hours=3)).isoformat(), (start + timedelta(days=1)).isoformat(),
+                  cohort, cohort, start.isoformat()).all()
+    matches = result['results']
+    counts = {status: 0 for status in ('correct', 'wrong', 'pending')}
+    for match in matches:
+        counts[match['result']] += 1
+    return {'date': day.isoformat(), 'cohort': cohort, 'matches': matches, 'counts': counts,
+            'result_source': 'football_mania'}

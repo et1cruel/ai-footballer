@@ -1,11 +1,11 @@
 """Cloudflare entrypoint for the existing analysis API and static UI."""
 import asyncio
 from base64 import b64decode
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import sys
 from time import monotonic
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 from fastapi import Depends, FastAPI
@@ -17,7 +17,7 @@ from football_ai.live import LIVE_MODEL_VERSION, _format_fixture
 from football_ai.mania import async_live_rows
 from football_ai.schedule import LEAGUES, build_analysis
 from context_feed import load_contexts, refresh_contexts
-from ledger import performance as live_performance, record_forecasts, settle_forecasts
+from ledger import forecast_history, performance as live_performance, record_forecasts, settle_forecasts
 from seed import DATABASE
 
 store.DB_PATH = Path('/tmp/football.sqlite')
@@ -35,7 +35,8 @@ app = FastAPI(title='Football AI Intelligence', docs_url='/api/docs', openapi_ur
 class Default(asgi.entrypoint(app)):
     async def fetch(self, request):
         if request.method == 'GET':
-            path = urlsplit(request.url).path
+            url = urlsplit(request.url)
+            path = url.path
             if path == '/api/live-fixtures':
                 await restore_seed()
                 snapshot = await live(self.env.FORECASTS)
@@ -44,6 +45,8 @@ class Default(asgi.entrypoint(app)):
                 return Response.json(snapshot)
             if path == '/api/live-performance':
                 return Response.json(await live_performance(self.env.FORECASTS))
+            if path == '/api/forecast-history':
+                return await forecast_history_response(self.env.FORECASTS, url.query)
             if path == '/api/upcoming-analysis':
                 await restore_seed()
                 return Response.json(await upcoming())
@@ -63,6 +66,19 @@ class Default(asgi.entrypoint(app)):
                 await record_snapshot(self.env.FORECASTS, data)
         finally:
             await settle_forecasts(self.env.FORECASTS, now)
+
+
+async def forecast_history_response(db, query):
+    params = parse_qs(query)
+    today = datetime.now(timezone(timedelta(hours=7))).date()
+    cohort = params.get('cohort', ['all'])[0]
+    try:
+        day = date.fromisoformat(params.get('date', [today.isoformat()])[0])
+    except ValueError:
+        return Response.from_json({'detail': 'วันที่ไม่ถูกต้อง'}, status=400)
+    if cohort not in {'all', 'win70'} or day < date(2000, 1, 1) or day > today:
+        return Response.from_json({'detail': 'ช่วงวันที่หรือชุดคำทายไม่ถูกต้อง'}, status=400)
+    return Response.from_json(await forecast_history(db, day, cohort))
 
 
 @app.get('/api/health')
