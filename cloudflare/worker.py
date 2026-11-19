@@ -48,7 +48,7 @@ class Default(asgi.entrypoint(app)):
                 return Response.json(await upcoming())
         return await super().fetch(request)
 
-    async def scheduled(self, controller):
+    async def scheduled(self, controller, env, ctx):
         await restore_seed()
         now = datetime.now(timezone.utc)
         try:
