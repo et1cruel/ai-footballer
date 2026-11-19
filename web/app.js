@@ -94,6 +94,9 @@ async function loadLiveAudit() {
     const wins = data.samples.find(sample => sample.sample === 'win_70');
     const summary = wins?.settled ? `ถูก ${wins.correct}/${wins.settled} คู่ที่ยืนยันผลแล้ว · รอผล ${wins.recorded - wins.settled} คู่`
       : `รอผล ${wins?.recorded || 0} คู่ · ยังไม่มีผลที่ยืนยันแล้ว`;
+    const comparison = wins?.settled
+      ? `<p class="helper">โอกาสชนะเฉลี่ยที่ให้ไว้ ${fmt(wins.average_confidence)} · ชนะจริง ${fmt(wins.correct / wins.settled)} จาก ${wins.settled} คู่</p>`
+      : '';
     const rows = data.recent.map(match => {
       const team = match.pick === 'home' ? match.home : match.away;
       const clock = `${match.minute}′${match.extra ? ` +${match.extra}` : ''}`;
@@ -103,8 +106,8 @@ async function loadLiveAudit() {
         <small>${clean(thaiTime(match.observed_at))} · ${clock} · ทาย ${clean(team)} ${fmt(match.pick_p)}</small></div><span>${result}</span></div>`;
     });
     const wasOpen = target.querySelector('details')?.open;
-    target.innerHTML = `<p><strong>${summary}</strong></p>
-      <p class="helper">นับคำทายทีมชนะครั้งแรกที่ถึง 70% ต่อคู่ในช่วง ${data.window_days} วัน เทียบผลครบ 90 นาทีรวมทดเจ็บจาก Football Mania</p>
+    target.innerHTML = `<p><strong>${summary}</strong></p>${comparison}
+      <p class="helper">นับคำทายทีมชนะครั้งแรกที่ถึง 70% ต่อคู่ในช่วง ${data.window_days} วัน เทียบผลครบ 90 นาทีรวมทดเจ็บจาก <a href="https://football-mania.com/th/" target="_blank" rel="noopener noreferrer">Football Mania</a></p>
       ${rows.length ? `<details ${wasOpen ? 'open' : ''}><summary>ดูคำทายล่าสุด</summary><div class="fixture-list">${rows.join('')}</div></details>` : ''}`;
   } catch {
     if (target.isConnected) target.textContent = 'ยังโหลดผลตรวจคำทายสดไม่ได้';
