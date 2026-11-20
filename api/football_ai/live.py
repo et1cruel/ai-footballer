@@ -10,10 +10,11 @@ from .model import score_matrix, estimate_rates, outcome_probabilities
 from .store import list_matches
 from .mania import live_rows
 from .match_context import match_rates
+from .team_strength import covered_team_rates, rating_data
 
 
 ESTIMATE_STATUSES = {'1H', 'HT', '2H'}
-LIVE_MODEL_VERSION = 'poisson-live-3'
+LIVE_MODEL_VERSION = 'poisson-live-4'
 LIVE_FIXTURES_URL = 'https://v3.football.api-sports.io/fixtures'
 _lock = Lock()
 _snapshot = None
@@ -21,7 +22,7 @@ _next_attempt = 0.0
 
 
 def regulation_probabilities(home_goals, away_goals, minute, status, rates=None, *,
-                             extra=None, announced=None, red_cards=None):
+                             extra=None, announced=None, red_cards=None, second_half_share=None):
     """Use equal scoring rates when there is no verified team-strength input."""
     if status not in ESTIMATE_STATUSES:
         return None
@@ -36,6 +37,11 @@ def regulation_probabilities(home_goals, away_goals, minute, status, rates=None,
     if status == '1H':
         minute = min(minute, 45)
     remaining = max(1, 90 - minute + stoppage_left) / 90
+    if second_half_share is not None:
+        if status == '1H':
+            remaining = second_half_share + (1 - second_half_share) * (45 - minute + stoppage_left) / 45
+        else:
+            remaining = max(1, 90 - minute + stoppage_left) * second_half_share / 45
     home_rate = rates['home'] if rates else 1.3
     away_rate = rates['away'] if rates else 1.3
     if red_cards:
@@ -73,6 +79,20 @@ def _format_fixture(row, history=None, context=None, now=None):
         observed = datetime.fromisoformat(context['observed_at'])
         fresh_context = 0 <= (now - observed).total_seconds() <= 180
         rates, factors = match_rates(context, rates, (home_goals, away_goals), fresh_context)
+    clock_args = {'extra': extra, 'announced': announced, 'red_cards': reds}
+    reference = regulation_probabilities(home_goals, away_goals, minute, status, rates, **clock_args)
+    artifact = rating_data()
+    rated = covered_team_rates(artifact, row['league'].get('country'), home, away, fixture.get('date'))
+    if rated:
+        rates = rated
+        factors = []
+        if context and now:
+            rates, factors = match_rates(context, rates, (home_goals, away_goals), fresh_context, use_team_form=False)
+        probabilities = regulation_probabilities(home_goals, away_goals, minute, status, rates,
+                                                  second_half_share=artifact['second_half_share'], **clock_args)
+        basis = 'opponent_adjusted'
+    else:
+        probabilities = reference
     return {
         'id': fixture['id'],
         'kickoff': fixture.get('date'),
@@ -87,8 +107,9 @@ def _format_fixture(row, history=None, context=None, now=None):
         'red_cards': reds,
         'home_goals': home_goals,
         'away_goals': away_goals,
-        'probabilities': regulation_probabilities(home_goals, away_goals, minute, status, rates,
-                                                 extra=extra, announced=announced, red_cards=reds),
+        'probabilities': probabilities,
+        'reference_probabilities': reference if rated else None,
+        'rating_evidence': {key: rated[key] for key in ('home_samples', 'away_samples', 'data_through')} if rated else None,
         'basis': basis,
         'factors': factors,
         'context': {**context, 'live_fresh': fresh_context} if context else None,

@@ -122,18 +122,18 @@ def match_context(detail, before, observed_at, profiles, previous=None):
             'match_finished': detail.get('status') in {'FT','AET','PEN'}}, active
 
 
-def match_rates(context, base, current_score, allow_live=True):
+def match_rates(context, base, current_score, allow_live=True, *, use_team_form=True):
     base = base or {'home': 1.3, 'away': 1.3}
     factors = {}
     home, away = (context['recent_form'][side] for side in SIDES)
-    if home and away and min(home['matches'], away['matches']) >= 3:
+    if use_team_form and home and away and min(home['matches'], away['matches']) >= 3:
         def form(team):
             n = team['matches']
             points = (team['wins'] + 0.33 * team['draws'] + 1.5) / (n + 3)
             margin = (team['goals'] - team['conceded']) / (n + 5)
             return points + 0.15 * max(-1.0, min(1.0, margin))
         factors['team_form'] = 0.5 * (form(home) - form(away))
-    if (h2h := context.get('head_to_head')) and h2h['matches'] >= 2:
+    if use_team_form and (h2h := context.get('head_to_head')) and h2h['matches'] >= 2:
         losses = h2h['matches'] - h2h['wins'] - h2h['draws']
         factors['head_to_head'] = 0.18 * (h2h['wins'] - losses) / (h2h['matches'] + 3)
     players = context['player_history']

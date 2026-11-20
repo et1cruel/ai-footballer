@@ -1,5 +1,26 @@
 # Accuracy research and production readiness
 
+## Live model v4 evaluation
+
+The domestic team ratings are trained from the Football Charts match results
+snapshot by Damir Devetak ([dataset and license](https://huggingface.co/datasets/Damir81/football-charts-results-goal-timing),
+CC BY 4.0). The distributed ratings are adapted aggregates. Raw matches are not
+bundled. Rebuild with `python scripts/train_live_strength.py football_charts_matches.csv --output api/football_ai/strength_data.py`.
+The source CSV SHA-256 is `08d1a0863d703550fe6e7fb1ef9faed4ea3cea95c664012373b1a1e1f159be10`.
+
+Predictions only use prior dates. July–December 2025 is validation, and
+January–July 2026 is the final walk-forward benchmark. The baseline is the
+short-term team form component without injuries, lineups or live events.
+
+| Checkpoint | Matches | Form accuracy | Rated accuracy | Form Brier | Rated Brier |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Kickoff | 11,493 | 44.6% | 49.4% | 0.6412 | 0.6110 |
+| Half-time | 11,482 | 59.3% | 61.2% | 0.5016 | 0.4887 |
+
+In production, eligible forecasts are recorded alongside the exact previous
+model on the same inputs for comparison after full time. The offline benchmark
+does not measure performance at other match minutes or in uncovered leagues.
+
 The included model is a well-defined independent-Poisson **baseline**, not a
 proven state-of-the-art football predictor. Do not call the website "ultra
 accurate" until an untouched prospective test demonstrates improvement.

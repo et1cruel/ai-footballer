@@ -42,6 +42,7 @@ def forecast_statements(db, fixture, now):
         """).bind(match_id, fixture['home'], fixture['away'], kickoff.isoformat(),
                   (kickoff + timedelta(minutes=100)).isoformat())]
     reds = fixture['red_cards'] or {}
+    reference = fixture.get('reference_probabilities')
     for sample in samples:
         statements.append(db.prepare("""
             INSERT INTO live_forecasts SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
@@ -51,6 +52,17 @@ def forecast_statements(db, fixture, now):
                       fixture['home_goals'], fixture['away_goals'], fixture['basis'], reds.get('home'), reds.get('away'),
                       probabilities['home'], probabilities['draw'], probabilities['away'], winner, confidence,
                       baseline['home'], baseline['draw'], baseline['away'], match_id))
+        if reference:
+            top = [key for key, value in reference.items() if value == max(reference.values())]
+            statements.append(db.prepare("""
+                INSERT INTO live_forecast_reference SELECT ?,?,?,?,?,?,?
+                WHERE EXISTS (
+                  SELECT 1 FROM live_forecasts WHERE match_id=? AND model=? AND sample=? AND observed_at=?
+                )
+                ON CONFLICT(match_id,model,sample) DO NOTHING
+                """).bind(match_id, LIVE_MODEL_VERSION, sample, reference['home'], reference['draw'],
+                          reference['away'], top[0] if len(top) == 1 else None,
+                          match_id, LIVE_MODEL_VERSION, sample, now.isoformat()))
     return statements
 
 
@@ -118,8 +130,23 @@ async def performance(db):
         FROM live_forecasts f JOIN live_matches m ON m.id=f.match_id
         WHERE f.model=? AND f.sample='win_70' ORDER BY f.observed_at DESC LIMIT 20
         """).bind(LIVE_MODEL_VERSION).all()
+    paired = await db.prepare("""
+        WITH ranked AS (
+          SELECT f.pick, r.pick AS previous_pick,
+            CASE WHEN m.final_home > m.final_away THEN 'home'
+                 WHEN m.final_home < m.final_away THEN 'away' ELSE 'draw' END AS outcome,
+            ROW_NUMBER() OVER(PARTITION BY f.match_id ORDER BY f.observed_at, f.sample) AS position
+          FROM live_forecast_reference r JOIN live_forecasts f USING(match_id, model, sample)
+          JOIN live_matches m ON m.id=f.match_id
+          WHERE f.model=? AND f.sample<>'win_70' AND m.confirmed_at IS NOT NULL
+            AND f.observed_at>=?
+        )
+        SELECT COUNT(*) AS matches, COALESCE(SUM(pick=outcome),0) AS correct,
+               COALESCE(SUM(previous_pick=outcome),0) AS previous_correct
+        FROM ranked WHERE position=1
+        """).bind(LIVE_MODEL_VERSION, (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()).first()
     return {'model': LIVE_MODEL_VERSION, 'samples': result['results'], 'recent': recent['results'],
-            'result_source': 'football_mania', 'window_days': 30}
+            'paired': paired, 'result_source': 'football_mania', 'window_days': 30}
 
 
 async def forecast_history(db, day: date, cohort: str):

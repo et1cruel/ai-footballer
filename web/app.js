@@ -76,9 +76,13 @@ function liveFixtureCard(fixture) {
     const highest = Math.max(...outcomes.map(([, probability]) => probability));
     const likely = outcomes.filter(([, probability]) => probability === highest);
     const summary = likely.length === 1 ? `แนวโน้มสูงสุด: ${likely[0][0]}` : 'โอกาสสูงสุดสูสีกัน';
-    const basis = ['สกอร์และเวลา', ...(fixture.basis === 'team_history' ? ['สถิติทีมระยะยาว'] : []), ...compared].join(' · ');
+    const historyBasis = {team_history:'สถิติทีมระยะยาว', opponent_adjusted:'ความแข็งแกร่งเทียบคู่แข่ง'};
+    const basis = ['สกอร์และเวลา', historyBasis[fixture.basis], ...compared].filter(Boolean).join(' · ');
+    const evidence = fixture.rating_evidence;
     forecast = `<div class="forecast-lead"><span>${clean(summary)}</span><strong>${fmt(highest)}</strong></div>
-      <small>${clean(basis)}${confirmedCards.length ? ' · ปรับตามใบแดง' : ''}</small><dl class="live-probabilities">${outcomes.map(([label, probability]) => `
+      <small>${clean(basis)}${confirmedCards.length ? ' · ปรับตามใบแดง' : ''}</small>
+      ${evidence ? `<small>ข้อมูล Football Charts · ใช้ผลย้อนหลัง ${evidence.home_samples} / ${evidence.away_samples} นัด</small>` : ''}
+      <dl class="live-probabilities">${outcomes.map(([label, probability]) => `
       <div class="${probability === highest ? 'leading' : ''}"><dt>${clean(label)}</dt><dd>${fmt(probability)}</dd></div>`).join('')}</dl>`;
   }
   return `<article class="fixture-item live-analysis-card" data-live-id="${clean(fixture.id)}"><div>
@@ -199,6 +203,9 @@ async function loadLiveAudit() {
     const comparison = wins?.settled
       ? `<p class="helper">โอกาสชนะเฉลี่ยที่ให้ไว้ ${fmt(wins.average_confidence)} · ชนะจริง ${fmt(wins.correct / wins.settled)} จาก ${wins.settled} คู่</p>`
       : '';
+    const paired = data.paired?.matches
+      ? `<p class="helper">เทียบคำทายจากสกอร์และนาทีเดียวกัน · รุ่นใหม่ถูก ${data.paired.correct}/${data.paired.matches} · รุ่นก่อนถูก ${data.paired.previous_correct}/${data.paired.matches}</p>`
+      : '<p class="helper">กำลังเก็บคำทายจากสกอร์และนาทีเดียวกันเพื่อเทียบรุ่นใหม่กับรุ่นก่อน</p>';
     const rows = data.recent.map(match => {
       const team = match.pick === 'home' ? match.home : match.away;
       const clock = `${match.minute}′${match.extra ? ` +${match.extra}` : ''}`;
@@ -208,7 +215,7 @@ async function loadLiveAudit() {
         <small>${clean(thaiTime(match.observed_at))} · ${clock} · ทาย ${clean(team)} ${fmt(match.pick_p)}</small></div><span>${result}</span></div>`;
     });
     const wasOpen = target.querySelector('details')?.open;
-    target.innerHTML = `<p><strong>${summary}</strong></p>${comparison}
+    target.innerHTML = `<p><strong>${summary}</strong></p>${comparison}${paired}
       <p class="helper">นับคำทายทีมชนะครั้งแรกที่ถึง 70% ต่อคู่ในช่วง ${data.window_days} วัน เทียบผลครบ 90 นาทีรวมทดเจ็บจาก <a href="https://football-mania.com/th/" target="_blank" rel="noopener noreferrer">Football Mania</a></p>
       ${rows.length ? `<details ${wasOpen ? 'open' : ''}><summary>ดูคำทายล่าสุด</summary><div class="fixture-list">${rows.join('')}</div></details>` : ''}`;
   } catch {

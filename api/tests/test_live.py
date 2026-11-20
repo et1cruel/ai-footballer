@@ -6,6 +6,7 @@ from football_ai.api import app
 from football_ai import live
 from football_ai.mania import raw_fixture
 from football_ai.match_context import match_context, match_rates
+from football_ai.team_strength import covered_team_rates, rating_data
 from datetime import date
 
 
@@ -64,6 +65,21 @@ def test_match_context_changes_rates_without_using_current_match_as_history():
     assert rates['home'] > rates['away']
     assert factors == ['team_form', 'player_recent', 'live_shots']
     assert match_rates(context, None, (1, 0))[1] == ['team_form']
+
+
+def test_rated_live_fixture_keeps_the_previous_prediction_for_comparison():
+    row = {'id': '3', 'date': '19/11/2026', 'time': '15:00', 'status': 'HT',
+           'localteam': 'MC Alger', 'visitorteam': 'Olympique Akbou', 'scoretime': '0 - 0',
+           'leaguename': 'Ligue 1', 'filegroup': 'Algeria'}
+    fixture = live._format_fixture(raw_fixture(row))
+    assert fixture['basis'] == 'opponent_adjusted'
+    assert fixture['probabilities']['home'] > fixture['probabilities']['away']
+    assert fixture['reference_probabilities'] == live.regulation_probabilities(0, 0, 45, 'HT')
+    assert fixture['rating_evidence']['away_samples'] >= 8
+    missing = live._format_fixture(raw_fixture({**row, 'filegroup': 'International'}))
+    assert missing['reference_probabilities'] is None
+    assert missing['probabilities'] == fixture['reference_probabilities']
+    assert covered_team_rates(rating_data(), 'Algeria', 'MC Alger', 'Olympique Akbou', '2025-11-19') is None
 
 
 def test_live_endpoint_uses_shared_provider_snapshot(monkeypatch):
